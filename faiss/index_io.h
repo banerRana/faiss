@@ -1,5 +1,5 @@
-/**
- * Copyright (c) Facebook, Inc. and its affiliates.
+/*
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * This source code is licensed under the MIT license found in the
  * LICENSE file in the root directory of this source tree.
@@ -11,16 +11,19 @@
 #define FAISS_INDEX_IO_H
 
 #include <cstdio>
-#include <string>
-#include <typeinfo>
-#include <vector>
+#include <memory>
+
+#include <faiss/impl/platform_macros.h>
 
 /** I/O functions can read/write to a filename, a file handle or to an
  * object that abstracts the medium.
  *
- * The read functions return objects that should be deallocated with
- * delete. All references within these objectes are owned by the
- * object.
+ * The read functions come in two forms:
+ * - read_*_up() returns a std::unique_ptr that owns the result.
+ * - read_*() returns a raw pointer for backward compatibility.
+ *   The caller is responsible for deleting the returned object.
+ *
+ * All references within these objects are owned by the object.
  */
 
 namespace faiss {
@@ -62,14 +65,32 @@ const int IO_FLAG_PQ_SKIP_SDC_TABLE = 32;
 // try to memmap data (useful to load an ArrayInvertedLists as an
 // OnDiskInvertedLists)
 const int IO_FLAG_MMAP = IO_FLAG_SKIP_IVF_DATA | 0x646f0000;
+// mmap that handles codes for IndexFlatCodes-derived indices and HNSW.
+// this is a temporary solution, it is expected to be merged with IO_FLAG_MMAP
+//   after OnDiskInvertedLists get properly updated.
+const int IO_FLAG_MMAP_IFC = 1 << 9;
+
+FAISS_API extern bool index_read_warn_on_null_invlists;
 
 Index* read_index(const char* fname, int io_flags = 0);
 Index* read_index(FILE* f, int io_flags = 0);
 Index* read_index(IOReader* reader, int io_flags = 0);
 
+std::unique_ptr<Index> read_index_up(const char* fname, int io_flags = 0);
+std::unique_ptr<Index> read_index_up(FILE* f, int io_flags = 0);
+std::unique_ptr<Index> read_index_up(IOReader* reader, int io_flags = 0);
+
 IndexBinary* read_index_binary(const char* fname, int io_flags = 0);
 IndexBinary* read_index_binary(FILE* f, int io_flags = 0);
 IndexBinary* read_index_binary(IOReader* reader, int io_flags = 0);
+
+std::unique_ptr<IndexBinary> read_index_binary_up(
+        const char* fname,
+        int io_flags = 0);
+std::unique_ptr<IndexBinary> read_index_binary_up(FILE* f, int io_flags = 0);
+std::unique_ptr<IndexBinary> read_index_binary_up(
+        IOReader* reader,
+        int io_flags = 0);
 
 void write_VectorTransform(const VectorTransform* vt, const char* fname);
 void write_VectorTransform(const VectorTransform* vt, IOWriter* f);
@@ -77,14 +98,60 @@ void write_VectorTransform(const VectorTransform* vt, IOWriter* f);
 VectorTransform* read_VectorTransform(const char* fname);
 VectorTransform* read_VectorTransform(IOReader* f);
 
+std::unique_ptr<VectorTransform> read_VectorTransform_up(const char* fname);
+std::unique_ptr<VectorTransform> read_VectorTransform_up(IOReader* f);
+
 ProductQuantizer* read_ProductQuantizer(const char* fname);
 ProductQuantizer* read_ProductQuantizer(IOReader* reader);
+
+std::unique_ptr<ProductQuantizer> read_ProductQuantizer_up(const char* fname);
+std::unique_ptr<ProductQuantizer> read_ProductQuantizer_up(IOReader* reader);
 
 void write_ProductQuantizer(const ProductQuantizer* pq, const char* fname);
 void write_ProductQuantizer(const ProductQuantizer* pq, IOWriter* f);
 
 void write_InvertedLists(const InvertedLists* ils, IOWriter* f);
 InvertedLists* read_InvertedLists(IOReader* reader, int io_flags = 0);
+
+std::unique_ptr<InvertedLists> read_InvertedLists_up(
+        IOReader* reader,
+        int io_flags = 0);
+
+// Returns the current deserialization loop limit.
+// When nonzero, deserialization rejects loop-driving fields (nlist,
+// nsplits, VT chain length, nhash, etc.) that exceed this value.
+// Default: 0 (no limit).
+size_t get_deserialization_loop_limit();
+
+// Sets the deserialization loop limit.
+// NOT thread-safe: set before any concurrent deserialization calls
+// and do not modify while deserialization is in progress on other threads.
+void set_deserialization_loop_limit(size_t value);
+
+// Returns the maximum number of bytes that a single READVECTOR call
+// may allocate.  Default: 1 TB (1 << 40).
+size_t get_deserialization_vector_byte_limit();
+
+// Sets the per-vector byte limit for deserialization.
+// NOT thread-safe: set before any concurrent deserialization calls
+// and do not modify while deserialization is in progress on other threads.
+void set_deserialization_vector_byte_limit(size_t value);
+
+// Returns the current IndexLattice r2 limit for deserialization.
+// When nonzero, deserialization rejects IndexLattice payloads whose
+// r2 (squared lattice radius) exceeds this value.  The
+// ZnSphereCodecRec constructor that runs at IndexLattice deserialize
+// time builds a decode cache whose population cost scales
+// polynomially in r2 and dim, and can exceed real-world workload time
+// budgets even for r2 values that do not trip the existing
+// decode-cache memory cap.
+// Default: 0 (no limit).
+size_t get_deserialization_lattice_r2_limit();
+
+// Sets the IndexLattice r2 deserialization limit.
+// NOT thread-safe: set before any concurrent deserialization calls
+// and do not modify while deserialization is in progress on other threads.
+void set_deserialization_lattice_r2_limit(size_t value);
 
 } // namespace faiss
 

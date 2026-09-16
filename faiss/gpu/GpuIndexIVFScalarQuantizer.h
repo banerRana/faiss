@@ -1,5 +1,5 @@
-/**
- * Copyright (c) Facebook, Inc. and its affiliates.
+/*
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * This source code is licensed under the MIT license found in the
  * LICENSE file in the root directory of this source tree.
@@ -92,6 +92,22 @@ class GpuIndexIVFScalarQuantizer : public GpuIndexIVF {
    protected:
     /// Validates index SQ parameters
     void verifySQSettings_() const;
+
+    /// Whether this index configuration can use cuVS IVF-SQ
+    bool shouldUseCuvs_() const;
+
+    /// Construct the backing IVF implementation
+    void setIndex_(
+            GpuResources* resources,
+            int dim,
+            idx_t nlist,
+            faiss::MetricType metric,
+            float metricArg,
+            bool useResidual,
+            faiss::ScalarQuantizer* scalarQ,
+            bool interleavedLayout,
+            IndicesOptions indicesOptions,
+            MemorySpace space);
 
     /// Called from train to handle SQ residual training
     void trainResiduals_(idx_t n, const float* x);

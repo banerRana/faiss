@@ -1,11 +1,10 @@
-/**
- * Copyright (c) Facebook, Inc. and its affiliates.
+/*
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * This source code is licensed under the MIT license found in the
  * LICENSE file in the root directory of this source tree.
  */
 
-// Copyright 2004-present Facebook. All Rights Reserved.
 // -*- c -*-
 
 #ifndef FAISS_AUX_INDEX_STRUCTURES_C_H
@@ -82,6 +81,17 @@ int faiss_IDSelectorBatch_new(
         size_t n,
         const idx_t* indices);
 
+FAISS_DECLARE_CLASS(IDSelectorBitmap)
+FAISS_DECLARE_DESTRUCTOR(IDSelectorBitmap)
+
+FAISS_DECLARE_GETTER(IDSelectorBitmap, size_t, n)
+FAISS_DECLARE_GETTER(IDSelectorBitmap, const uint8_t*, bitmap)
+
+int faiss_IDSelectorBitmap_new(
+        FaissIDSelectorBitmap** p_sel,
+        size_t n,
+        const uint8_t* bitmap);
+
 FAISS_DECLARE_CLASS(IDSelectorNot)
 int faiss_IDSelectorNot_new(
         FaissIDSelectorNot** p_sel,
@@ -126,7 +136,7 @@ int faiss_BufferList_new(FaissBufferList** p_bl, size_t buffer_size);
 
 int faiss_BufferList_add(FaissBufferList* bl, idx_t id, float dis);
 
-/// copy elemnts ofs:ofs+n-1 seen as linear data in the buffers to
+/// copy elements ofs:ofs+n-1 seen as linear data in the buffers to
 /// tables dest_ids, dest_dis
 int faiss_BufferList_copy_range(
         FaissBufferList* bl,

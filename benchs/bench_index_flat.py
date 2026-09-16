@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
-
-# Copyright (c) Facebook, Inc. and its affiliates.
+# Copyright (c) Meta Platforms, Inc. and affiliates.
 #
 # This source code is licensed under the MIT license found in the
 # LICENSE file in the root directory of this source tree.
@@ -23,7 +22,7 @@ def format_tab(x):
 faiss.cvar.distance_compute_min_k_reservoir = 5
 
 # for have_threads in True, False:
-for have_threads in False, :
+for have_threads in (False,):
 
     if have_threads:
         # good config for Intel(R) Xeon(R) CPU E5-2698 v4 @ 2.20GHz
@@ -71,17 +70,21 @@ for have_threads in False, :
                     t0 = time.time()
                     index.search(ds.get_queries(), k)
                     t1 = time.time()
-                    if run >= nrun // 5: # the rest is considered warmup
+                    if run >= nrun // 5:  # the rest is considered warmup
                         times.append((t1 - t0))
                 times = np.array(times)
 
                 if unit == "ms":
                     times *= 1000
-                    print("search k=%3d t=%.3f ms (± %.4f)" % (
-                        k, np.mean(times), np.std(times)))
+                    print(
+                        "search k=%3d t=%.3f ms (± %.4f)"
+                        % (k, np.mean(times), np.std(times))
+                    )
                 else:
-                    print("search k=%3d t=%.3f s (± %.4f)" % (
-                        k, np.mean(times), np.std(times)))
+                    print(
+                        "search k=%3d t=%.3f s (± %.4f)"
+                        % (k, np.mean(times), np.std(times))
+                    )
                 restab1.append(np.mean(times))
 
         print("restab=\n", format_tab(restab))

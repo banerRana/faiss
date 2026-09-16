@@ -1,5 +1,5 @@
-/**
- * Copyright (c) Facebook, Inc. and its affiliates.
+/*
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * This source code is licensed under the MIT license found in the
  * LICENSE file in the root directory of this source tree.
@@ -86,7 +86,7 @@ class GpuIndexBinaryFlat : public IndexBinary {
             idx_t* outIndicesData) const;
 
    protected:
-    /// Manages streans, cuBLAS handles and scratch memory for devices
+    /// Manages streams, cuBLAS handles and scratch memory for devices
     std::shared_ptr<GpuResources> resources_;
 
     /// Configuration options

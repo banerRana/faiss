@@ -1,16 +1,16 @@
-/**
- * Copyright (c) Facebook, Inc. and its affiliates.
+/*
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * This source code is licensed under the MIT license found in the
  * LICENSE file in the root directory of this source tree.
  */
 
-// Copyright 2004-present Facebook. All Rights Reserved.
 // -*- c -*-
 
 #ifndef FAISS_AUTO_TUNE_C_H
 #define FAISS_AUTO_TUNE_C_H
 
+#include "IndexBinary_c.h"
 #include "Index_c.h"
 #include "faiss_c.h"
 
@@ -60,10 +60,29 @@ int faiss_ParameterSpace_set_index_parameters_cno(
         FaissIndex*,
         size_t);
 
+/// set a combination of parameters described by a string on a binary index
+int faiss_ParameterSpace_set_index_parameters_binary(
+        const FaissParameterSpace*,
+        FaissIndexBinary*,
+        const char*);
+
+/// set a combination of parameters on a binary index
+int faiss_ParameterSpace_set_index_parameters_cno_binary(
+        const FaissParameterSpace*,
+        FaissIndexBinary*,
+        size_t);
+
 /// set one of the parameters
 int faiss_ParameterSpace_set_index_parameter(
         const FaissParameterSpace*,
         FaissIndex*,
+        const char*,
+        double);
+
+/// set one of the parameters for a binary index
+int faiss_ParameterSpace_set_index_parameter_binary(
+        const FaissParameterSpace*,
+        FaissIndexBinary*,
         const char*,
         double);
 

@@ -1,3 +1,4 @@
+// @lint-ignore-every LICENSELINT
 /**
  * Copyright (c) Facebook, Inc. and its affiliates.
  *
@@ -5,7 +6,7 @@
  * LICENSE file in the root directory of this source tree.
  */
 /*
- * Copyright (c) 2024, NVIDIA CORPORATION.
+ * Copyright (c) 2024-2025, NVIDIA CORPORATION.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -26,6 +27,10 @@
 #include <faiss/gpu/GpuIndex.h>
 #include <faiss/gpu/GpuIndexIVFPQ.h>
 
+#include <variant>
+#include <vector>
+#include "faiss/Index.h"
+
 namespace faiss {
 struct IndexHNSWCagra;
 }
@@ -33,13 +38,18 @@ struct IndexHNSWCagra;
 namespace faiss {
 namespace gpu {
 
-class RaftCagra;
+template <typename data_t>
+class CuvsCagra;
 
 enum class graph_build_algo {
     /// Use IVF-PQ to build all-neighbors knn graph
     IVF_PQ,
-    /// Experimental, use NN-Descent to build all-neighbors knn graph
-    NN_DESCENT
+    /// Use NN-Descent to build all-neighbors knn graph
+    NN_DESCENT,
+    /// Use iterative search to build knn graph
+    ITERATIVE_SEARCH,
+    /// Exact knn graph via tiled brute force
+    BRUTE_FORCE
 };
 
 /// A type for specifying how PQ codebooks are created.
@@ -92,7 +102,7 @@ struct IVFPQBuildCagraConfig {
     /// Note: if `dim` is not multiple of `pq_dim`, a random rotation is always
     /// applied to the input data and queries to transform the working space
     /// from `dim` to `rot_dim`, which may be slightly larger than the original
-    /// space and and is a multiple of `pq_dim` (`rot_dim % pq_dim == 0`).
+    /// space and is a multiple of `pq_dim` (`rot_dim % pq_dim == 0`).
     /// However, this transform is not necessary when `dim` is multiple of
     /// `pq_dim`
     ///   (`dim == rot_dim`, hence no need in adding "extra" data columns /
@@ -115,7 +125,6 @@ struct IVFPQBuildCagraConfig {
     /// the algorithm always allocates the minimum amount of memory required to
     /// store the given number of records. Set this flag to `true` if you prefer
     /// to use as little GPU memory for the database as possible.
-
     bool conservative_memory_allocation = false;
 };
 
@@ -129,7 +138,7 @@ struct IVFPQSearchCagraConfig {
     ///
     /// The use of low-precision types reduces the amount of shared memory
     /// required at search time, so fast shared memory kernels can be used even
-    /// for datasets with large dimansionality. Note that the recall is slightly
+    /// for datasets with large dimensionality. Note that the recall is slightly
     /// degraded when low-precision type is selected.
 
     cudaDataType_t lut_dtype = CUDA_R_32F;
@@ -160,6 +169,38 @@ struct IVFPQSearchCagraConfig {
     /// negative effects on the search performance if tweaked incorrectly.
 
     double preferred_shmem_carveout = 1.0;
+
+    /// Set the internal batch size to improve GPU utilization at the cost of
+    /// larger memory footprint.
+    uint32_t max_internal_batch_size = 4096;
+};
+
+/// Knobs for the multi-GPU build path, selected by listing more than one
+/// device in GpuIndexCagraConfig::devices. Degrees, build_algo and metric
+/// still come from GpuIndexCagraConfig.
+struct AllNeighborsCagraConfig {
+    /// Number of overlapping clusters the dataset is partitioned into.
+    /// 0 selects max(2 * number of devices, 4).
+    size_t n_clusters = 0;
+
+    /// Clusters each vector is assigned to. Must be >= 2: with 1 there are no
+    /// cross-cluster edges and recall collapses. 0 selects 2.
+    size_t overlap_factor = 2;
+
+    /// Bounds IVF-PQ search memory during the knn build. cuVS's default can
+    /// exhaust device memory around 100M vectors; 8192 avoids that and does
+    /// not change recall. 0 keeps cuVS's default.
+    uint32_t ivf_pq_search_batch_size = 0;
+
+    /// IVF-PQ refinement multiplier. The refine pass runs on the CPU, so cost
+    /// scales with this. Raising it above 1.0 measured both slower and less
+    /// accurate, so it is separate from the shared refine_rate.
+    float refinement_rate = 1.0f;
+
+    /// Size the IVF-PQ index for one cluster rather than the whole dataset.
+    /// cuVS reuses these params for every cluster without rescaling, so
+    /// sizing from the full dataset badly over-partitions each one.
+    bool ivf_pq_size_from_cluster = true;
 };
 
 struct GpuIndexCagraConfig : public GpuIndexConfig {
@@ -172,20 +213,46 @@ struct GpuIndexCagraConfig : public GpuIndexConfig {
     /// Number of Iterations to run if building with NN_DESCENT
     size_t nn_descent_niter = 20;
 
-    IVFPQBuildCagraConfig* ivf_pq_params = nullptr;
-    IVFPQSearchCagraConfig* ivf_pq_search_params = nullptr;
+    std::shared_ptr<IVFPQBuildCagraConfig> ivf_pq_params{nullptr};
+    std::shared_ptr<IVFPQSearchCagraConfig> ivf_pq_search_params{nullptr};
+    float refine_rate = 2.0f;
+    bool store_dataset = true;
+
+    /// Whether to use MST optimization to guarantee graph connectivity.
+    bool guarantee_connectivity = false;
+
+    /// Devices to build on. More than one selects the multi-GPU build in
+    /// train(); see AllNeighborsCagraConfig and train() for its restrictions.
+    /// Empty or one device uses GpuIndexConfig::device as usual.
+    std::vector<int> devices;
+
+    AllNeighborsCagraConfig all_neighbors_params;
+
+    /// Build the HNSW upper levels on the GPU during copyTo() instead of by
+    /// CPU insertion. Roughly 10x faster, but measured worse recall than
+    /// base_level_only, which is cheaper still. Off by default.
+    bool gpu_hnsw_upper_levels = false;
+
+    /// intermediate_graph_degree for the per-level subgraph builds.
+    /// 0 = twice the upper-level degree.
+    size_t gpu_hnsw_intermediate_degree = 0;
+
+    /// MST connectivity pass on the per-level subgraphs. On by default:
+    /// upper levels are walked greedily with no backtracking, so a
+    /// disconnected component is a trap the descent cannot escape.
+    bool gpu_hnsw_guarantee_connectivity = true;
 };
 
 enum class search_algo {
     /// For large batch sizes.
-    SINGLE_CTA,
+    SINGLE_CTA = 0,
     /// For small batch sizes.
-    MULTI_CTA,
-    MULTI_KERNEL,
-    AUTO
+    MULTI_CTA = 1,
+    MULTI_KERNEL = 2,
+    AUTO = 100
 };
 
-enum class hash_mode { HASH, SMALL, AUTO };
+enum class hash_mode { HASH = 0, SMALL = 1, AUTO = 100 };
 
 struct SearchParametersCagra : SearchParameters {
     /// Maximum number of queries to search at the same time (batch size). Auto
@@ -242,12 +309,27 @@ struct GpuIndexCagra : public GpuIndex {
             faiss::MetricType metric = faiss::METRIC_L2,
             GpuIndexCagraConfig config = GpuIndexCagraConfig());
 
-    /// Trains CAGRA based on the given vector data
+    /// Trains CAGRA based on the given vector data and add them along with ids.
+    /// NB: The use of the add function here is to build the CAGRA graph on
+    /// the base dataset. Use this function when you want to add vectors with
+    /// ids. Ref: https://github.com/facebookresearch/faiss/issues/4107
+    void add(idx_t n, const float* x) override;
+    void add_ex(idx_t n, const void* x, NumericType numeric_type) override;
+
+    /// Trains CAGRA based on the given vector data.
+    /// NB: The use of the train function here is to build the CAGRA graph on
+    /// the base dataset and is currently the only function to add the full set
+    /// of vectors (without IDs) to the index. There is no external quantizer to
+    /// be trained here.
     void train(idx_t n, const float* x) override;
+    void train_ex(idx_t n, const void* x, NumericType numeric_type) override;
 
     /// Initialize ourselves from the given CPU index; will overwrite
     /// all data in ourselves
     void copyFrom(const faiss::IndexHNSWCagra* index);
+    void copyFrom_ex(
+            const faiss::IndexHNSWCagra* index,
+            NumericType numeric_type);
 
     /// Copy ourselves to the given CPU index; will overwrite all data
     /// in the index instance
@@ -257,10 +339,17 @@ struct GpuIndexCagra : public GpuIndex {
 
     std::vector<idx_t> get_knngraph() const;
 
+    faiss::NumericType get_numeric_type() const;
+
    protected:
     bool addImplRequiresIDs_() const override;
 
     void addImpl_(idx_t n, const float* x, const idx_t* ids) override;
+    void addImpl_ex_(
+            idx_t n,
+            const void* x,
+            NumericType numeric_type,
+            const idx_t* ids) override;
 
     /// Called from GpuIndex for search
     void searchImpl_(
@@ -270,12 +359,46 @@ struct GpuIndexCagra : public GpuIndex {
             float* distances,
             idx_t* labels,
             const SearchParameters* search_params) const override;
+    void searchImpl_ex_(
+            idx_t n,
+            const void* x,
+            NumericType numeric_type,
+            int k,
+            float* distances,
+            idx_t* labels,
+            const SearchParameters* search_params) const override;
+
+    /// Multi-GPU build path taken by train() when cagraConfig_.devices lists
+    /// more than one device: cuVS `all_neighbors` knn graph construction over
+    /// overlapping clusters, followed by graph pruning. Leaves the result in
+    /// merged_knngraph_ for copyTo(); index_ stays empty.
+    void trainAllNeighbors_(idx_t n, const float* x);
+
+    /// Populate HNSW levels >= 1 of `index` by building a CAGRA graph over
+    /// each level's node subset on the GPU. Requires the level table to be
+    /// prepared and the storage populated. Returns the max level.
+    void buildHnswUpperLevelsGpu_(faiss::IndexHNSWCagra* index, int max_lvl)
+            const;
+
+    void copyToMultiGpu_(faiss::IndexHNSWCagra* index) const;
 
     /// Our configuration options
     const GpuIndexCagraConfig cagraConfig_;
 
+    faiss::NumericType numeric_type_;
+
     /// Instance that we own; contains the inverted lists
-    std::shared_ptr<RaftCagra> index_;
+    std::variant<
+            std::monostate,
+            std::shared_ptr<CuvsCagra<float>>,
+            std::shared_ptr<CuvsCagra<half>>,
+            std::shared_ptr<CuvsCagra<int8_t>>>
+            index_;
+
+    /// Multi-GPU state: populated by trainAllNeighbors_(), used by copyTo()
+    std::vector<idx_t> merged_knngraph_;
+    idx_t merged_knngraph_degree_ = 0;
+    const float* multi_gpu_dataset_ = nullptr;
 };
 
 } // namespace gpu

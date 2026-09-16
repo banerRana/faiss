@@ -1,5 +1,5 @@
-/**
- * Copyright (c) Facebook, Inc. and its affiliates.
+/*
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * This source code is licensed under the MIT license found in the
  * LICENSE file in the root directory of this source tree.
@@ -37,9 +37,10 @@ inline uint64_t lo_offset(uint64_t lo) {
  */
 struct DirectMap {
     enum Type {
-        NoMap = 0,    // default
-        Array = 1,    // sequential ids (only for add, no add_with_ids)
-        Hashtable = 2 // arbitrary ids
+        NoMap,     // default
+        Array,     // sequential ids (only for add, no add_with_ids)
+        Hashtable, // arbitrary ids
+        DMT_count
     };
     Type type;
 

@@ -1,5 +1,5 @@
-/**
- * Copyright (c) Facebook, Inc. and its affiliates.
+/*
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * This source code is licensed under the MIT license found in the
  * LICENSE file in the root directory of this source tree.
@@ -28,7 +28,7 @@ namespace faiss {
  */
 
 struct IndexAdditiveQuantizerFastScan : IndexFastScan {
-    AdditiveQuantizer* aq;
+    AdditiveQuantizer* aq = nullptr;
     using Search_type_t = AdditiveQuantizer::Search_type_t;
 
     bool rescale_norm = true;
@@ -62,7 +62,11 @@ struct IndexAdditiveQuantizerFastScan : IndexFastScan {
 
     void compute_codes(uint8_t* codes, idx_t n, const float* x) const override;
 
-    void compute_float_LUT(float* lut, idx_t n, const float* x) const override;
+    void compute_float_LUT(
+            float* lut,
+            idx_t n,
+            const float* x,
+            const FastScanDistancePostProcessing& context) const override;
 
     void search(
             idx_t n,
@@ -82,6 +86,9 @@ struct IndexAdditiveQuantizerFastScan : IndexFastScan {
      * @param x       output vectors, size n * d
      */
     void sa_decode(idx_t n, const uint8_t* bytes, float* x) const override;
+
+    /// Packed code size: M2 / 2 bytes (4-bit AQ sub-quantizer nibbles)
+    size_t fast_scan_code_size() const override;
 };
 
 /** Index based on a residual quantizer. Stored vectors are

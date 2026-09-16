@@ -1,4 +1,5 @@
 # Copyright (c) Meta Platforms, Inc. and affiliates.
+#
 # This source code is licensed under the MIT license found in the
 # LICENSE file in the root directory of this source tree.
 
@@ -37,9 +38,9 @@ class TestUtilsMethods(unittest.TestCase):
             data_creator.create_test_data()
             args = data_creator.setup_cli()
             cfg = load_config(args.config)
-            db_iterator = create_dataset_from_oivf_config(
-                cfg, args.xb
-            ).iterate(0, TEST_BATCH_SIZE, np.float32)
+            db_iterator = create_dataset_from_oivf_config(cfg, args.xb).iterate(
+                0, TEST_BATCH_SIZE, np.float32
+            )
 
             for i in range(len(SMALL_FILE_SIZES) - 1):
                 vecs = next(db_iterator)
@@ -64,9 +65,9 @@ class TestUtilsMethods(unittest.TestCase):
             data_creator.create_test_data()
             args = data_creator.setup_cli()
             cfg = load_config(args.config)
-            db_iterator = create_dataset_from_oivf_config(
-                cfg, args.xb
-            ).iterate(0, TEST_BATCH_SIZE, np.float32)
+            db_iterator = create_dataset_from_oivf_config(cfg, args.xb).iterate(
+                0, TEST_BATCH_SIZE, np.float32
+            )
 
             for i in range(len(LARGE_FILE_SIZES) - 1):
                 vecs = next(db_iterator)
@@ -80,7 +81,8 @@ class TestUtilsMethods(unittest.TestCase):
 
     def test_get_vs_iterate(self) -> None:
         """
-        Loads vectors with iterator and get, and checks that they match, non-aligned by file size case.
+        Loads vectors with iterator and get, and checks that they match,
+        non-aligned by file size case.
         """
         with tempfile.TemporaryDirectory() as tmpdirname:
             data_creator = TestDataCreator(
@@ -104,7 +106,8 @@ class TestUtilsMethods(unittest.TestCase):
 
     def test_iterate_back(self) -> None:
         """
-        Loads vectors with iterator and get, and checks that they match, non-aligned by file size case.
+        Loads vectors with iterator and get, and checks that they match,
+        non-aligned by file size case.
         """
         with tempfile.TemporaryDirectory() as tmpdirname:
             data_creator = TestDataCreator(

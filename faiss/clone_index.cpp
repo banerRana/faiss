@@ -1,5 +1,5 @@
-/**
- * Copyright (c) Facebook, Inc. and its affiliates.
+/*
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * This source code is licensed under the MIT license found in the
  * LICENSE file in the root directory of this source tree.
@@ -9,9 +9,6 @@
 
 #include <faiss/clone_index.h>
 
-#include <cstdio>
-#include <cstdlib>
-
 #include <faiss/impl/FaissAssert.h>
 
 #include <faiss/Index2Layer.h>
@@ -19,14 +16,21 @@
 #include <faiss/IndexAdditiveQuantizerFastScan.h>
 #include <faiss/IndexBinary.h>
 #include <faiss/IndexBinaryFlat.h>
+#include <faiss/IndexBinaryHNSW.h>
+#include <faiss/IndexBinaryIVF.h>
+#include <faiss/IndexEDEN.h>
 #include <faiss/IndexFlat.h>
 #include <faiss/IndexHNSW.h>
 #include <faiss/IndexIVF.h>
 #include <faiss/IndexIVFAdditiveQuantizerFastScan.h>
+#include <faiss/IndexIVFEDEN.h>
 #include <faiss/IndexIVFFlat.h>
+#include <faiss/IndexIVFFlatPanorama.h>
 #include <faiss/IndexIVFPQ.h>
 #include <faiss/IndexIVFPQFastScan.h>
 #include <faiss/IndexIVFPQR.h>
+#include <faiss/IndexIVFRaBitQ.h>
+#include <faiss/IndexIVFRaBitQFastScan.h>
 #include <faiss/IndexIVFSpectralHash.h>
 #include <faiss/IndexLSH.h>
 #include <faiss/IndexLattice.h>
@@ -34,6 +38,7 @@
 #include <faiss/IndexPQ.h>
 #include <faiss/IndexPQFastScan.h>
 #include <faiss/IndexPreTransform.h>
+#include <faiss/IndexRaBitQ.h>
 #include <faiss/IndexRefine.h>
 #include <faiss/IndexRowwiseMinMax.h>
 #include <faiss/IndexScalarQuantizer.h>
@@ -41,11 +46,11 @@
 #include <faiss/MetaIndexes.h>
 #include <faiss/VectorTransform.h>
 
+#include <faiss/impl/CodePacker.h>
 #include <faiss/impl/LocalSearchQuantizer.h>
 #include <faiss/impl/ProductQuantizer.h>
 #include <faiss/impl/ResidualQuantizer.h>
 #include <faiss/impl/ScalarQuantizer.h>
-#include <faiss/impl/pq4_fast_scan.h>
 
 #include <faiss/invlists/BlockInvertedLists.h>
 
@@ -75,6 +80,7 @@ VectorTransform* Cloner::clone_VectorTransform(const VectorTransform* vt) {
     TRYCLONE(PCAMatrix, vt)
     TRYCLONE(ITQMatrix, vt)
     TRYCLONE(RandomRotationMatrix, vt)
+    TRYCLONE(HadamardRotation, vt)
     TRYCLONE(LinearTransform, vt) {
         FAISS_THROW_MSG("clone not supported for this type of VectorTransform");
     }
@@ -96,7 +102,12 @@ IndexIVF* Cloner::clone_IndexIVF(const IndexIVF* ivf) {
     TRYCLONE(IndexIVFResidualQuantizerFastScan, ivf)
     TRYCLONE(IndexIVFPQFastScan, ivf)
 
+    TRYCLONE(IndexIVFEDEN, ivf)
+    TRYCLONE(IndexIVFRaBitQFastScan, ivf)
+    TRYCLONE(IndexIVFRaBitQ, ivf)
+
     TRYCLONE(IndexIVFFlatDedup, ivf)
+    TRYCLONE(IndexIVFFlatPanorama, ivf)
     TRYCLONE(IndexIVFFlat, ivf)
 
     TRYCLONE(IndexIVFSpectralHash, ivf)
@@ -104,6 +115,11 @@ IndexIVF* Cloner::clone_IndexIVF(const IndexIVF* ivf) {
     TRYCLONE(IndexIVFScalarQuantizer, ivf) {
         FAISS_THROW_MSG("clone not supported for this type of IndexIVF");
     }
+    return nullptr;
+}
+
+IndexBinaryIVF* clone_IndexBinaryIVF(const IndexBinaryIVF* ivf) {
+    TRYCLONE(IndexBinaryIVF, ivf)
     return nullptr;
 }
 
@@ -123,12 +139,19 @@ IndexIDMap* clone_IndexIDMap(const IndexIDMap* im) {
 
 IndexHNSW* clone_IndexHNSW(const IndexHNSW* ihnsw) {
     TRYCLONE(IndexHNSW2Level, ihnsw)
+    TRYCLONE(IndexHNSWFlatPanorama, ihnsw)
+    TRYCLONE(IndexHNSWRaBitQ, ihnsw)
     TRYCLONE(IndexHNSWFlat, ihnsw)
     TRYCLONE(IndexHNSWPQ, ihnsw)
     TRYCLONE(IndexHNSWSQ, ihnsw)
     TRYCLONE(IndexHNSW, ihnsw) {
         FAISS_THROW_MSG("clone not supported for this type of IndexHNSW");
     }
+}
+
+IndexBinaryHNSW* clone_IndexBinaryHNSW(const IndexBinaryHNSW* ihnsw) {
+    TRYCLONE(IndexBinaryHNSW, ihnsw)
+    return nullptr;
 }
 
 IndexNNDescent* clone_IndexNNDescent(const IndexNNDescent* innd) {
@@ -143,7 +166,7 @@ IndexNSG* clone_IndexNSG(const IndexNSG* insg) {
     TRYCLONE(IndexNSGPQ, insg)
     TRYCLONE(IndexNSGSQ, insg)
     TRYCLONE(IndexNSG, insg) {
-        FAISS_THROW_MSG("clone not supported for this type of IndexNNDescent");
+        FAISS_THROW_MSG("clone not supported for this type of IndexNSG");
     }
 }
 
@@ -156,7 +179,7 @@ IndexRowwiseMinMaxBase* clone_IndexRowwiseMinMax(
     }
 }
 
-#define TRYCAST(classname) classname* res = dynamic_cast<classname*>(index)
+#define TRYCAST(classname, var) auto* var = dynamic_cast<classname*>(index)
 
 void reset_AdditiveQuantizerIndex(Index* index) {
     auto clone_ProductQuantizers =
@@ -165,50 +188,50 @@ void reset_AdditiveQuantizerIndex(Index* index) {
                     q = dynamic_cast<AdditiveQuantizer*>(clone_Quantizer(q));
                 }
             };
-    if (TRYCAST(IndexIVFLocalSearchQuantizerFastScan)) {
-        res->aq = &res->lsq;
-    } else if (TRYCAST(IndexIVFResidualQuantizerFastScan)) {
-        res->aq = &res->rq;
-    } else if (TRYCAST(IndexIVFProductLocalSearchQuantizerFastScan)) {
-        res->aq = &res->plsq;
-        clone_ProductQuantizers(res->plsq.quantizers);
-    } else if (TRYCAST(IndexIVFProductResidualQuantizerFastScan)) {
-        res->aq = &res->prq;
-        clone_ProductQuantizers(res->prq.quantizers);
-    } else if (TRYCAST(IndexIVFLocalSearchQuantizer)) {
-        res->aq = &res->lsq;
-    } else if (TRYCAST(IndexIVFResidualQuantizer)) {
-        res->aq = &res->rq;
-    } else if (TRYCAST(IndexIVFProductLocalSearchQuantizer)) {
-        res->aq = &res->plsq;
-        clone_ProductQuantizers(res->plsq.quantizers);
-    } else if (TRYCAST(IndexIVFProductResidualQuantizer)) {
-        res->aq = &res->prq;
-        clone_ProductQuantizers(res->prq.quantizers);
-    } else if (TRYCAST(IndexLocalSearchQuantizerFastScan)) {
-        res->aq = &res->lsq;
-    } else if (TRYCAST(IndexResidualQuantizerFastScan)) {
-        res->aq = &res->rq;
-    } else if (TRYCAST(IndexProductLocalSearchQuantizerFastScan)) {
-        res->aq = &res->plsq;
-        clone_ProductQuantizers(res->plsq.quantizers);
-    } else if (TRYCAST(IndexProductResidualQuantizerFastScan)) {
-        res->aq = &res->prq;
-        clone_ProductQuantizers(res->prq.quantizers);
-    } else if (TRYCAST(IndexLocalSearchQuantizer)) {
-        res->aq = &res->lsq;
-    } else if (TRYCAST(IndexResidualQuantizer)) {
-        res->aq = &res->rq;
-    } else if (TRYCAST(IndexProductLocalSearchQuantizer)) {
-        res->aq = &res->plsq;
-        clone_ProductQuantizers(res->plsq.quantizers);
-    } else if (TRYCAST(IndexProductResidualQuantizer)) {
-        res->aq = &res->prq;
-        clone_ProductQuantizers(res->prq.quantizers);
-    } else if (TRYCAST(LocalSearchCoarseQuantizer)) {
-        res->aq = &res->lsq;
-    } else if (TRYCAST(ResidualCoarseQuantizer)) {
-        res->aq = &res->rq;
+    if (TRYCAST(IndexIVFLocalSearchQuantizerFastScan, r1)) {
+        r1->aq = &r1->lsq;
+    } else if (TRYCAST(IndexIVFResidualQuantizerFastScan, r2)) {
+        r2->aq = &r2->rq;
+    } else if (TRYCAST(IndexIVFProductLocalSearchQuantizerFastScan, r3)) {
+        r3->aq = &r3->plsq;
+        clone_ProductQuantizers(r3->plsq.quantizers);
+    } else if (TRYCAST(IndexIVFProductResidualQuantizerFastScan, r4)) {
+        r4->aq = &r4->prq;
+        clone_ProductQuantizers(r4->prq.quantizers);
+    } else if (TRYCAST(IndexIVFLocalSearchQuantizer, r5)) {
+        r5->aq = &r5->lsq;
+    } else if (TRYCAST(IndexIVFResidualQuantizer, r6)) {
+        r6->aq = &r6->rq;
+    } else if (TRYCAST(IndexIVFProductLocalSearchQuantizer, r7)) {
+        r7->aq = &r7->plsq;
+        clone_ProductQuantizers(r7->plsq.quantizers);
+    } else if (TRYCAST(IndexIVFProductResidualQuantizer, r8)) {
+        r8->aq = &r8->prq;
+        clone_ProductQuantizers(r8->prq.quantizers);
+    } else if (TRYCAST(IndexLocalSearchQuantizerFastScan, r9)) {
+        r9->aq = &r9->lsq;
+    } else if (TRYCAST(IndexResidualQuantizerFastScan, r10)) {
+        r10->aq = &r10->rq;
+    } else if (TRYCAST(IndexProductLocalSearchQuantizerFastScan, r11)) {
+        r11->aq = &r11->plsq;
+        clone_ProductQuantizers(r11->plsq.quantizers);
+    } else if (TRYCAST(IndexProductResidualQuantizerFastScan, r12)) {
+        r12->aq = &r12->prq;
+        clone_ProductQuantizers(r12->prq.quantizers);
+    } else if (TRYCAST(IndexLocalSearchQuantizer, r13)) {
+        r13->aq = &r13->lsq;
+    } else if (TRYCAST(IndexResidualQuantizer, r14)) {
+        r14->aq = &r14->rq;
+    } else if (TRYCAST(IndexProductLocalSearchQuantizer, r15)) {
+        r15->aq = &r15->plsq;
+        clone_ProductQuantizers(r15->plsq.quantizers);
+    } else if (TRYCAST(IndexProductResidualQuantizer, r16)) {
+        r16->aq = &r16->prq;
+        clone_ProductQuantizers(r16->prq.quantizers);
+    } else if (TRYCAST(LocalSearchCoarseQuantizer, r17)) {
+        r17->aq = &r17->lsq;
+    } else if (TRYCAST(ResidualCoarseQuantizer, r18)) {
+        r18->aq = &r18->rq;
     } else {
         FAISS_THROW_MSG(
                 "clone not supported for this type of additive quantizer index");
@@ -245,9 +268,7 @@ InvertedLists* clone_InvertedLists(const InvertedLists* invlists) {
     if (auto* bils = dynamic_cast<const BlockInvertedLists*>(invlists)) {
         auto* bils2 = new BlockInvertedLists(*bils);
         if (bils->packer) {
-            auto* packerPQ4 = dynamic_cast<const CodePackerPQ4*>(bils->packer);
-            FAISS_THROW_IF_NOT(packerPQ4);
-            bils2->packer = new CodePackerPQ4(*packerPQ4);
+            bils2->packer = bils->packer->clone();
         }
         return bils2;
     }
@@ -265,14 +286,17 @@ Index* Cloner::clone_Index(const Index* index) {
     // IndexFlat
     TRYCLONE(IndexFlat1D, index)
     TRYCLONE(IndexFlatL2, index)
+    TRYCLONE(IndexFlatL2Panorama, index)
     TRYCLONE(IndexFlatIP, index)
     TRYCLONE(IndexFlat, index)
 
     TRYCLONE(IndexLattice, index)
     TRYCLONE(IndexRandom, index)
     TRYCLONE(IndexPQFastScan, index)
+    TRYCLONE(IndexEDEN, index)
 
     TRYCLONE(IndexScalarQuantizer, index)
+    TRYCLONE(IndexRaBitQ, index)
     TRYCLONE(MultiIndexQuantizer, index)
 
     if (const IndexIVF* ivf = dynamic_cast<const IndexIVF*>(index)) {
@@ -303,8 +327,9 @@ Index* Cloner::clone_Index(const Index* index) {
         res->metric_arg = ipt->metric_arg;
 
         res->index = clone_Index(ipt->index);
-        for (int i = 0; i < ipt->chain.size(); i++)
+        for (size_t i = 0; i < ipt->chain.size(); i++) {
             res->chain.push_back(clone_VectorTransform(ipt->chain[i]));
+        }
         res->own_fields = true;
         return res;
     } else if (
@@ -323,9 +348,10 @@ Index* Cloner::clone_Index(const Index* index) {
         IndexNSG* res = clone_IndexNSG(insg);
 
         // copy the dynamic allocated graph
-        auto& new_graph = res->nsg.final_graph;
-        auto& old_graph = insg->nsg.final_graph;
-        new_graph = std::make_shared<nsg::Graph<int>>(*old_graph);
+        if (auto& old_graph = insg->nsg.final_graph) {
+            auto& new_graph = res->nsg.final_graph;
+            new_graph = std::make_shared<nsg::Graph<int>>(*old_graph);
+        }
 
         res->own_fields = true;
         res->storage = clone_Index(insg->storage);
@@ -359,6 +385,7 @@ Index* Cloner::clone_Index(const Index* index) {
         IndexRowwiseMinMaxBase* res = clone_IndexRowwiseMinMax(irmmb);
         res->own_fields = true;
         res->index = clone_Index(irmmb->index);
+        return res;
     } else if (
             dynamic_cast<const IndexAdditiveQuantizerFastScan*>(index) ||
             dynamic_cast<const IndexAdditiveQuantizer*>(index) ||
@@ -385,6 +412,28 @@ Quantizer* clone_Quantizer(const Quantizer* quant) {
 IndexBinary* clone_binary_index(const IndexBinary* index) {
     if (auto ii = dynamic_cast<const IndexBinaryFlat*>(index)) {
         return new IndexBinaryFlat(*ii);
+    } else if (
+            const IndexBinaryIVF* ivf =
+                    dynamic_cast<const IndexBinaryIVF*>(index)) {
+        IndexBinaryIVF* res = clone_IndexBinaryIVF(ivf);
+        if (ivf->invlists == nullptr) {
+            res->invlists = nullptr;
+        } else {
+            res->invlists = clone_InvertedLists(ivf->invlists);
+            res->own_invlists = true;
+        }
+
+        res->own_fields = true;
+        res->quantizer = clone_binary_index(ivf->quantizer);
+
+        return res;
+    } else if (
+            const IndexBinaryHNSW* ihnsw =
+                    dynamic_cast<const IndexBinaryHNSW*>(index)) {
+        IndexBinaryHNSW* res = clone_IndexBinaryHNSW(ihnsw);
+        res->own_fields = true;
+        res->storage = clone_binary_index(ihnsw->storage);
+        return res;
     } else {
         FAISS_THROW_MSG("cannot clone this type of index");
     }

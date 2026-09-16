@@ -1,3 +1,4 @@
+// @lint-ignore-every LICENSELINT
 /**
  * Copyright (c) Facebook, Inc. and its affiliates.
  *
@@ -5,7 +6,7 @@
  * LICENSE file in the root directory of this source tree.
  */
 /*
- * Copyright (c) 2023, NVIDIA CORPORATION.
+ * Copyright (c) 2023-2024, NVIDIA CORPORATION.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -30,9 +31,10 @@
 #include <utility>
 #include <vector>
 
-#if defined USE_NVIDIA_RAFT
+#if defined USE_NVIDIA_CUVS
 #include <raft/core/device_resources.hpp>
-#include <rmm/mr/device/device_memory_resource.hpp>
+#include <cuda/memory_resource>
+#include <optional>
 #endif
 
 namespace faiss {
@@ -161,8 +163,8 @@ struct AllocRequest : public AllocInfo {
     /// The size in bytes of the allocation
     size_t size = 0;
 
-#if defined USE_NVIDIA_RAFT
-    rmm::mr::device_memory_resource* mr = nullptr;
+#if defined USE_NVIDIA_CUVS
+    std::optional<cuda::mr::any_resource<cuda::mr::device_accessible>> mr;
 #endif
 };
 
@@ -204,6 +206,9 @@ class GpuResources {
     /// of demand
     virtual void initializeForDevice(int device) = 0;
 
+    /// Does the given GPU support bfloat16?
+    virtual bool supportsBFloat16(int device) = 0;
+
     /// Returns the cuBLAS handle that we use for the given device
     virtual cublasHandle_t getBlasHandle(int device) = 0;
 
@@ -211,7 +216,7 @@ class GpuResources {
     /// given device
     virtual cudaStream_t getDefaultStream(int device) = 0;
 
-#if defined USE_NVIDIA_RAFT
+#if defined USE_NVIDIA_CUVS
     /// Returns the raft handle for the given device which can be used to
     /// make calls to other raft primitives.
     virtual raft::device_resources& getRaftHandle(int device) = 0;
@@ -250,6 +255,9 @@ class GpuResources {
     ///
     /// Functions provided by default
     ///
+
+    /// Does the current GPU support bfloat16?
+    bool supportsBFloat16CurrentDevice();
 
     /// Calls getBlasHandle with the current device
     cublasHandle_t getBlasHandleCurrentDevice();

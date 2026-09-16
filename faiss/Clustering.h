@@ -1,5 +1,5 @@
-/**
- * Copyright (c) Facebook, Inc. and its affiliates.
+/*
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * This source code is licensed under the MIT license found in the
  * LICENSE file in the root directory of this source tree.
@@ -10,6 +10,7 @@
 #ifndef FAISS_CLUSTERING_H
 #define FAISS_CLUSTERING_H
 #include <faiss/Index.h>
+#include <faiss/impl/ClusteringInitialization.h>
 
 #include <vector>
 
@@ -43,11 +44,45 @@ struct ClusteringParameters {
     int min_points_per_centroid = 39;
     /// to limit size of dataset, otherwise the training set is subsampled
     int max_points_per_centroid = 256;
-    /// seed for the random number generator
+    /// seed for the random number generator.
+    /// negative values lead to seeding an internal rng with
+    /// std::high_resolution_clock.
     int seed = 1234;
 
     /// when the training set is encoded, batch size of the codec decoder
     size_t decode_block_size = 32768;
+
+    /// whether to check for NaNs in an input data
+    bool check_input_data_for_NaNs = true;
+
+    /// Whether to use splitmix64-based random number generator for subsampling,
+    /// which is faster, but may pick duplicate points.
+    bool use_faster_subsampling = false;
+
+    /// Initialization method for centroids.
+    /// RANDOM: uniform random sampling (default, current behavior)
+    /// KMEANS_PLUS_PLUS: k-means++ (O(nkd), better quality)
+    /// AFK_MC2: Assumption-Free K-MC² (O(nd) + O(mk²d), fast approximation)
+    ClusteringInitMethod init_method = ClusteringInitMethod::RANDOM;
+
+    /// Chain length for AFK-MC² initialization.
+    /// Only used when init_method = AFK_MC2.
+    /// Longer chains give better approximation but are slower.
+    uint16_t afkmc2_chain_length = 50;
+
+    /// Early stop threshold, the range is [0, 1].
+    /// The value of 0 implies a default Faiss behavior,
+    /// so the training process stops only if an error
+    /// is unchanged from the previous iteration.
+    double early_stop_threshold = 0.0;
+
+    /// Whether to use the SuperKMeans (super fast k-means) variant instead of
+    /// the vanilla Clustering implementation. Only honored by callers that
+    /// explicitly support it (e.g. IVF level-1 quantizer training). Cannot be
+    /// combined with a user-provided clustering index: SuperKMeans assigns
+    /// with its own index, so callers that supply both get an exception rather
+    /// than a silent downgrade to vanilla Clustering.
+    bool use_super_kmeans = false;
 };
 
 struct ClusteringIterationStats {
@@ -64,7 +99,7 @@ struct ClusteringIterationStats {
  * points to the centroids. Therefore, at each iteration the centroids
  * are added to the index.
  *
- * On output, the centoids table is set to the latest version
+ * On output, the centroids table is set to the latest version
  * of the centroids and they are also added to the index. If the
  * centroids table it is not empty on input, it is also used for
  * initialization.
@@ -100,7 +135,7 @@ struct Clustering : ClusteringParameters {
 
     /** run with encoded vectors
      *
-     * win addition to train()'s parameters takes a codec as parameter
+     * in addition to train()'s parameters takes a codec as parameter
      * to decode the input vectors.
      *
      * @param codec      codec used to decode the vectors (nullptr =

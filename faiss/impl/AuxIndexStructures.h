@@ -1,5 +1,5 @@
-/**
- * Copyright (c) Facebook, Inc. and its affiliates.
+/*
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * This source code is licensed under the MIT license found in the
  * LICENSE file in the root directory of this source tree.
@@ -17,6 +17,8 @@
 #include <memory>
 #include <mutex>
 #include <vector>
+
+#include <faiss/impl/InvertedListScannerStats.h>
 
 #include <faiss/MetricType.h>
 #include <faiss/impl/platform_macros.h>
@@ -80,7 +82,7 @@ struct BufferList {
     /// add one result, possibly appending a new buffer if needed
     void add(idx_t id, float dis);
 
-    /// copy elemnts ofs:ofs+n-1 seen as linear data in the buffers to
+    /// copy elements ofs:ofs+n-1 seen as linear data in the buffers to
     /// tables dest_ids, dest_dis
     void copy_range(size_t ofs, size_t n, idx_t* dest_ids, float* dest_dis);
 };
@@ -92,6 +94,7 @@ struct RangeQueryResult {
     idx_t qno;   //< id of the query
     size_t nres; //< nb of results for this query
     RangeSearchPartialResult* pres;
+    InvertedListScannerStats stats;
 
     /// called by search function to report a new result
     void add(float dis, idx_t id);
@@ -122,7 +125,7 @@ struct RangeSearchPartialResult : BufferList {
     void copy_result(bool incremental = false);
 
     /// merge a set of PartialResult's into one RangeSearchResult
-    /// on ouptut the partialresults are empty!
+    /// on output the partialresults are empty!
     static void merge(
             std::vector<RangeSearchPartialResult*>& partial_results,
             bool do_delete = true);
@@ -167,34 +170,6 @@ struct TimeoutCallback : InterruptCallback {
     bool want_interrupt() override;
     void set_timeout(double timeout_in_seconds);
     static void reset(double timeout_in_seconds);
-};
-
-/// set implementation optimized for fast access.
-struct VisitedTable {
-    std::vector<uint8_t> visited;
-    uint8_t visno;
-
-    explicit VisitedTable(int size) : visited(size), visno(1) {}
-
-    /// set flag #no to true
-    void set(int no) {
-        visited[no] = visno;
-    }
-
-    /// get flag #no
-    bool get(int no) const {
-        return visited[no] == visno;
-    }
-
-    /// reset all flags to false
-    void advance() {
-        visno++;
-        if (visno == 250) {
-            // 250 rather than 255 because sometimes we use visno and visno+1
-            memset(visited.data(), 0, sizeof(visited[0]) * visited.size());
-            visno = 1;
-        }
-    }
 };
 
 } // namespace faiss

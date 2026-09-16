@@ -1,11 +1,10 @@
-/**
- * Copyright (c) Facebook, Inc. and its affiliates.
+/*
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * This source code is licensed under the MIT license found in the
  * LICENSE file in the root directory of this source tree.
  */
 
-#include <omp.h>
 #include <cstdio>
 #include <vector>
 
@@ -13,6 +12,8 @@
 
 #include <faiss/impl/FaissAssert.h>
 #include <faiss/utils/hamming.h>
+#include <faiss/utils/hamming_distance/hamming_computer-generic.h>
+
 #include <faiss/utils/random.h>
 #include <faiss/utils/utils.h>
 
@@ -39,8 +40,9 @@ struct HammingComputerM8 {
     int hamming(const uint8_t* b8) const {
         const uint64_t* b = (uint64_t*)b8;
         int accu = 0;
-        for (int i = 0; i < n; i++)
+        for (int i = 0; i < n; i++) {
             accu += popcount64(a[i] ^ b[i]);
+        }
         return accu;
     }
 
@@ -68,8 +70,9 @@ struct HammingComputerM4 {
     int hamming(const uint8_t* b8) const {
         const uint32_t* b = (uint32_t*)b8;
         int accu = 0;
-        for (int i = 0; i < n; i++)
+        for (int i = 0; i < n; i++) {
             accu += popcount64(a[i] ^ b[i]);
+        }
         return accu;
     }
 
@@ -224,8 +227,7 @@ int main() {
                 double t0, t1, t2, t3;
                 t0 = getmillisecs();
 
-                // new implem from Zilliz
-                hamming_cpt_test<HammingComputerDefault>(
+                hamming_cpt_test<HammingComputerDefault_tpl<SINGLE_SIMD_LEVEL>>(
                         cs, x.data(), x.data(), n, rst_default.data());
                 t1 = getmillisecs();
 
@@ -285,31 +287,38 @@ int main() {
             x1.data(), x2.data(), n1, n2, sumx, xorx);
     hamming_computer_test<faiss::HammingComputer8, 64>(
             x1.data(), x2.data(), n1, n2, sumx, xorx);
-    hamming_computer_test<faiss::HammingComputer16, 128>(
+    hamming_computer_test<faiss::HammingComputer16_tpl<SINGLE_SIMD_LEVEL>, 128>(
             x1.data(), x2.data(), n1, n2, sumx, xorx);
-    hamming_computer_test<faiss::HammingComputer20, 160>(
+    hamming_computer_test<faiss::HammingComputer20_tpl<SINGLE_SIMD_LEVEL>, 160>(
             x1.data(), x2.data(), n1, n2, sumx, xorx);
-    hamming_computer_test<faiss::HammingComputer32, 256>(
+    hamming_computer_test<faiss::HammingComputer32_tpl<SINGLE_SIMD_LEVEL>, 256>(
             x1.data(), x2.data(), n1, n2, sumx, xorx);
-    hamming_computer_test<faiss::HammingComputer64, 512>(
+    hamming_computer_test<faiss::HammingComputer64_tpl<SINGLE_SIMD_LEVEL>, 512>(
             x1.data(), x2.data(), n1, n2, sumx, xorx);
 
     // evaluate various GenHammingDistanceComputerXX
-    hamming_computer_test<faiss::GenHammingComputer8, 64>(
-            x1.data(), x2.data(), n1, n2, sumx, xorx);
-    hamming_computer_test<faiss::GenHammingComputer16, 128>(
-            x1.data(), x2.data(), n1, n2, sumx, xorx);
-    hamming_computer_test<faiss::GenHammingComputer32, 256>(
-            x1.data(), x2.data(), n1, n2, sumx, xorx);
+    hamming_computer_test<
+            faiss::GenHammingComputer8_tpl<SINGLE_SIMD_LEVEL>,
+            64>(x1.data(), x2.data(), n1, n2, sumx, xorx);
+    hamming_computer_test<
+            faiss::GenHammingComputer16_tpl<SINGLE_SIMD_LEVEL>,
+            128>(x1.data(), x2.data(), n1, n2, sumx, xorx);
+    hamming_computer_test<
+            faiss::GenHammingComputer32_tpl<SINGLE_SIMD_LEVEL>,
+            256>(x1.data(), x2.data(), n1, n2, sumx, xorx);
 
-    hamming_computer_test<faiss::GenHammingComputerM8, 64>(
-            x1.data(), x2.data(), n1, n2, sumx, xorx);
-    hamming_computer_test<faiss::GenHammingComputerM8, 128>(
-            x1.data(), x2.data(), n1, n2, sumx, xorx);
-    hamming_computer_test<faiss::GenHammingComputerM8, 256>(
-            x1.data(), x2.data(), n1, n2, sumx, xorx);
-    hamming_computer_test<faiss::GenHammingComputerM8, 512>(
-            x1.data(), x2.data(), n1, n2, sumx, xorx);
+    hamming_computer_test<
+            faiss::GenHammingComputerM8_tpl<SINGLE_SIMD_LEVEL>,
+            64>(x1.data(), x2.data(), n1, n2, sumx, xorx);
+    hamming_computer_test<
+            faiss::GenHammingComputerM8_tpl<SINGLE_SIMD_LEVEL>,
+            128>(x1.data(), x2.data(), n1, n2, sumx, xorx);
+    hamming_computer_test<
+            faiss::GenHammingComputerM8_tpl<SINGLE_SIMD_LEVEL>,
+            256>(x1.data(), x2.data(), n1, n2, sumx, xorx);
+    hamming_computer_test<
+            faiss::GenHammingComputerM8_tpl<SINGLE_SIMD_LEVEL>,
+            512>(x1.data(), x2.data(), n1, n2, sumx, xorx);
 
     return 0;
 }

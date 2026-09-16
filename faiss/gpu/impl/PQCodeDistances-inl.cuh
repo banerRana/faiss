@@ -1,5 +1,5 @@
-/**
- * Copyright (c) Facebook, Inc. and its affiliates.
+/*
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * This source code is licensed under the MIT license found in the
  * LICENSE file in the root directory of this source tree.
@@ -20,6 +20,10 @@
 namespace faiss {
 namespace gpu {
 
+__device__ constexpr inline int getLaunchBound() {
+    return kWarpSize == 32 ? 288 : 320;
+}
+
 // Kernel responsible for calculating distance from residual vector to
 // each product quantizer code centroid
 template <
@@ -27,7 +31,7 @@ template <
         typename CentroidT,
         int DimsPerSubQuantizer,
         bool L2Distance>
-__global__ void __launch_bounds__(288, 3) pqCodeDistances(
+__global__ void __launch_bounds__(getLaunchBound(), 3) pqCodeDistances(
         Tensor<float, 2, true> queries,
         int queriesPerBlock,
         Tensor<CentroidT, 2, true> coarseCentroids,
@@ -632,7 +636,8 @@ void runPQCodeDistances(
 
     // Reserve one block of threads for double buffering
     // FIXME: probably impractical for large # of dims?
-    auto loadingThreads = utils::roundUp(dimsPerSubQuantizer, kWarpSize);
+    int warpSize = getWarpSizeCurrentDevice();
+    auto loadingThreads = utils::roundUp(dimsPerSubQuantizer, warpSize);
     auto block = dim3(codesPerSubQuantizer + loadingThreads);
 
     auto smem = (3 * dimsPerSubQuantizer) * sizeof(float) +

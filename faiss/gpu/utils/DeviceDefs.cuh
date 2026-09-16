@@ -1,5 +1,5 @@
-/**
- * Copyright (c) Facebook, Inc. and its affiliates.
+/*
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * This source code is licensed under the MIT license found in the
  * LICENSE file in the root directory of this source tree.
@@ -8,9 +8,37 @@
 #pragma once
 
 #include <cuda.h>
+#ifdef USE_AMD_ROCM
+#include <rocm-core/rocm_version.h> // ROCm version macros
+#if ROCM_VERSION_MAJOR >= 7
+#include <rocprim/intrinsics/arch.hpp> // rocprim::arch::wavefront
+#endif
+#endif
 
 namespace faiss {
 namespace gpu {
+
+#ifdef USE_AMD_ROCM
+
+#if ROCM_VERSION_MAJOR < 7
+#if __AMDGCN_WAVEFRONT_SIZE == 32u
+constexpr int kWarpSize = 32;
+#else
+constexpr int kWarpSize = 64;
+#endif
+#else
+// ROCm 7.0 and above
+constexpr __device__ int kWarpSize = rocprim::arch::wavefront::max_size();
+#endif
+
+// This is a memory barrier for intra-warp writes to shared memory.
+__forceinline__ __device__ void warpFence() {
+    __threadfence_block();
+}
+
+#define GPU_MAX_SELECTION_K 2048
+
+#else // USE_AMD_ROCM
 
 // We require at least CUDA 8.0 for compilation
 #if CUDA_VERSION < 8000
@@ -38,6 +66,8 @@ __forceinline__ __device__ void warpFence() {
 #else
 #define GPU_MAX_SELECTION_K 1024
 #endif
+
+#endif // USE_AMD_ROCM
 
 } // namespace gpu
 } // namespace faiss

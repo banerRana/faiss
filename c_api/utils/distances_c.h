@@ -1,11 +1,10 @@
-/**
- * Copyright (c) Facebook, Inc. and its affiliates.
+/*
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * This source code is licensed under the MIT license found in the
  * LICENSE file in the root directory of this source tree.
  */
 
-// Copyright 2004-present Facebook. All Rights Reserved.
 // -*- c -*-
 
 #ifndef FAISS_DISTANCES_C_H
@@ -75,11 +74,11 @@ void faiss_fvec_norms_L2sqr(float* norms, const float* x, size_t d, size_t nx);
 /// L2-renormalize a set of vector. Nothing done if the vector is 0-normed
 void faiss_fvec_renorm_L2(size_t d, size_t nx, float* x);
 
-/// Setter of threshold value on nx above which we switch to BLAS to compute
+/// Setter of threshold value on nx * d above which we switch to BLAS to compute
 /// distances
 void faiss_set_distance_compute_blas_threshold(int value);
 
-/// Getter of threshold value on nx above which we switch to BLAS to compute
+/// Getter of threshold value on nx * d above which we switch to BLAS to compute
 /// distances
 int faiss_get_distance_compute_blas_threshold();
 

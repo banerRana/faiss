@@ -1,11 +1,11 @@
-# Copyright (c) Facebook, Inc. and its affiliates.
+# Copyright (c) Meta Platforms, Inc. and affiliates.
 #
 # This source code is licensed under the MIT license found in the
 # LICENSE file in the root directory of this source tree.
 
 """
 This demonstrates how to reproduce the QINCo paper results using the Faiss
-QINCo implementation. The code loads the reference model because training 
+QINCo implementation. The code loads the reference model because training
 is not implemented in Faiss.
 
 Prepare the data with
@@ -23,7 +23,6 @@ wget https://dl.fbaipublicfiles.com/QINCo/models/bigann_8x8_L2.pt
 
 """
 
-import numpy as np
 from faiss.contrib.vecs_io import bvecs_mmap
 import sys
 import time
@@ -32,18 +31,17 @@ import faiss
 
 # make sure pickle deserialization will work
 sys.path.append("/tmp/Qinco")
-import model_qinco
 
 with torch.no_grad():
 
-    qinco = torch.load("/tmp/bigann_8x8_L2.pt")
+    qinco = torch.load("/tmp/bigann_8x8_L2.pt", weights_only=False)
     qinco.eval()
     # print(qinco)
     if True:
         torch.set_num_threads(1)
         faiss.omp_set_num_threads(1)
 
-    x_base = bvecs_mmap("/tmp/bigann1M.bvecs")[:1000].astype('float32')
+    x_base = bvecs_mmap("/tmp/bigann1M.bvecs")[:1000].astype("float32")
     x_scaled = torch.from_numpy(x_base) / qinco.db_scale
 
     t0 = time.time()

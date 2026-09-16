@@ -1,5 +1,5 @@
-/**
- * Copyright (c) Facebook, Inc. and its affiliates.
+/*
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * This source code is licensed under the MIT license found in the
  * LICENSE file in the root directory of this source tree.
@@ -22,7 +22,7 @@ namespace faiss {
  * used to distribute a MultiIndexQuantizer
  */
 struct IndexSplitVectors : Index {
-    bool own_fields;
+    bool own_fields = false;
     bool threaded;
     std::vector<Index*> sub_indexes;
     idx_t sum_d; /// sum of dimensions seen so far

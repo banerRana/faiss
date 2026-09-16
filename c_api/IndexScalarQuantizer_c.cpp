@@ -1,11 +1,10 @@
-/**
- * Copyright (c) Facebook, Inc. and its affiliates.
+/*
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * This source code is licensed under the MIT license found in the
  * LICENSE file in the root directory of this source tree.
  */
 
-// Copyright 2004-present Facebook. All Rights Reserved.
 // -*- c++ -*-
 
 #include "IndexScalarQuantizer_c.h"
@@ -109,4 +108,43 @@ int faiss_IndexIVFScalarQuantizer_add_core(
                 n, x, xids, precomputed_idx);
     }
     CATCH_AND_HANDLE
+}
+
+/** The returned pointer is a borrowed reference to a member of the
+ * owning index; must not be freed.*/
+FaissScalarQuantizer* faiss_IndexScalarQuantizer_sq(
+        FaissIndexScalarQuantizer* index) {
+    return reinterpret_cast<FaissScalarQuantizer*>(
+            &reinterpret_cast<IndexScalarQuantizer*>(index)->sq);
+}
+
+/** The returned pointer is a borrowed reference to a member of the
+ * owning index; must not be freed.*/
+FaissScalarQuantizer* faiss_IndexIVFScalarQuantizer_sq(
+        FaissIndexIVFScalarQuantizer* index) {
+    return reinterpret_cast<FaissScalarQuantizer*>(
+            &reinterpret_cast<IndexIVFScalarQuantizer*>(index)->sq);
+}
+
+DEFINE_GETTER(ScalarQuantizer, FaissQuantizerType, qtype)
+DEFINE_GETTER(ScalarQuantizer, size_t, bits)
+DEFINE_GETTER(ScalarQuantizer, size_t, d)
+DEFINE_GETTER(ScalarQuantizer, size_t, code_size)
+DEFINE_GETTER(ScalarQuantizer, FaissRangeStat, rangestat)
+DEFINE_SETTER_STATIC(
+        ScalarQuantizer,
+        faiss::ScalarQuantizer::RangeStat,
+        FaissRangeStat,
+        rangestat)
+DEFINE_GETTER(ScalarQuantizer, float, rangestat_arg)
+DEFINE_SETTER(ScalarQuantizer, float, rangestat_arg)
+
+size_t faiss_ScalarQuantizer_trained_size(const FaissScalarQuantizer* sq) {
+    return reinterpret_cast<const faiss::ScalarQuantizer*>(sq)->trained.size();
+}
+
+void faiss_ScalarQuantizer_trained(const FaissScalarQuantizer* sq, float* out) {
+    const auto& trained =
+            reinterpret_cast<const faiss::ScalarQuantizer*>(sq)->trained;
+    memcpy(out, trained.data(), trained.size() * sizeof(float));
 }

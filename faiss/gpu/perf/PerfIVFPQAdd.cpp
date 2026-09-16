@@ -1,5 +1,5 @@
-/**
- * Copyright (c) Facebook, Inc. and its affiliates.
+/*
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * This source code is licensed under the MIT license found in the
  * LICENSE file in the root directory of this source tree.
@@ -14,7 +14,6 @@
 #include <faiss/gpu/utils/DeviceUtils.h>
 #include <faiss/gpu/utils/Timer.h>
 #include <gflags/gflags.h>
-#include <map>
 #include <vector>
 
 DEFINE_int32(batches, 10, "number of batches of vectors to add");
@@ -32,7 +31,7 @@ DEFINE_bool(reserve_memory, false, "whether or not to pre-reserve memory");
 int main(int argc, char** argv) {
     gflags::ParseCommandLineFlags(&argc, &argv, true);
 
-    cudaProfilerStop();
+    CUDA_VERIFY(cudaProfilerStop());
 
     int dim = FLAGS_dim;
     int numCentroids = FLAGS_centroids;
@@ -73,7 +72,7 @@ int main(int argc, char** argv) {
         }
     }
 
-    cudaDeviceSynchronize();
+    CUDA_VERIFY(cudaDeviceSynchronize());
     CUDA_VERIFY(cudaProfilerStart());
 
     float totalGpuTime = 0.0f;

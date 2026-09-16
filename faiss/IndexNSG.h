@@ -1,5 +1,5 @@
-/**
- * Copyright (c) Facebook, Inc. and its affiliates.
+/*
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * This source code is licensed under the MIT license found in the
  * LICENSE file in the root directory of this source tree.
@@ -8,8 +8,6 @@
 // -*- c++ -*-
 
 #pragma once
-
-#include <vector>
 
 #include <faiss/IndexFlat.h>
 #include <faiss/IndexNNDescent.h>
@@ -24,7 +22,7 @@ namespace faiss {
  * link structure built on top */
 
 struct IndexNSG : Index {
-    /// the link strcuture
+    /// the link structure
     NSG nsg;
 
     /// the sequential storage

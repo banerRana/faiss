@@ -1,5 +1,5 @@
-/**
- * Copyright (c) Facebook, Inc. and its affiliates.
+/*
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * This source code is licensed under the MIT license found in the
  * LICENSE file in the root directory of this source tree.
@@ -43,11 +43,13 @@ size_t VectorIOWriter::operator()(const void* ptr, size_t size, size_t nitems) {
 }
 
 size_t VectorIOReader::operator()(void* ptr, size_t size, size_t nitems) {
-    if (rp >= data.size())
+    if (rp >= data.size()) {
         return 0;
+    }
     size_t nremain = (data.size() - rp) / size;
-    if (nremain < nitems)
+    if (nremain < nitems) {
         nitems = nremain;
+    }
     if (size * nitems > 0) {
         memcpy(ptr, &data[rp], size * nitems);
         rp += size * nitems;
@@ -72,7 +74,7 @@ FileIOReader::FileIOReader(const char* fname) {
 FileIOReader::~FileIOReader() {
     if (need_close) {
         int ret = fclose(f);
-        if (ret != 0) { // we cannot raise and exception in the destructor
+        if (ret != 0) { // we cannot raise an exception in the destructor
             fprintf(stderr,
                     "file %s close error: %s",
                     name.c_str(),
@@ -107,7 +109,7 @@ FileIOWriter::~FileIOWriter() {
     if (need_close) {
         int ret = fclose(f);
         if (ret != 0) {
-            // we cannot raise and exception in the destructor
+            // we cannot raise an exception in the destructor
             fprintf(stderr,
                     "file %s close error: %s",
                     name.c_str(),
@@ -132,19 +134,20 @@ int FileIOWriter::filedescriptor() {
  * IO buffer
  ***********************************************************************/
 
-BufferedIOReader::BufferedIOReader(IOReader* reader, size_t bsz)
-        : reader(reader),
-          bsz(bsz),
+BufferedIOReader::BufferedIOReader(IOReader* reader_in, size_t bsz_in)
+        : reader(reader_in),
+          bsz(bsz_in),
           ofs(0),
           ofs2(0),
           b0(0),
           b1(0),
-          buffer(bsz) {}
+          buffer(bsz_in) {}
 
 size_t BufferedIOReader::operator()(void* ptr, size_t unitsize, size_t nitems) {
     size_t size = unitsize * nitems;
-    if (size == 0)
+    if (size == 0) {
         return 0;
+    }
     char* dst = (char*)ptr;
     size_t nb;
 
@@ -181,16 +184,17 @@ size_t BufferedIOReader::operator()(void* ptr, size_t unitsize, size_t nitems) {
     return nb / unitsize;
 }
 
-BufferedIOWriter::BufferedIOWriter(IOWriter* writer, size_t bsz)
-        : writer(writer), bsz(bsz), ofs2(0), b0(0), buffer(bsz) {}
+BufferedIOWriter::BufferedIOWriter(IOWriter* writer_in, size_t bsz_in)
+        : writer(writer_in), bsz(bsz_in), ofs2(0), b0(0), buffer(bsz_in) {}
 
 size_t BufferedIOWriter::operator()(
         const void* ptr,
         size_t unitsize,
         size_t nitems) {
     size_t size = unitsize * nitems;
-    if (size == 0)
+    if (size == 0) {
         return 0;
+    }
     const char* src = (const char*)ptr;
     size_t nb;
 
@@ -260,7 +264,7 @@ std::string fourcc_inv(uint32_t x) {
 std::string fourcc_inv_printable(uint32_t x) {
     char cstr[5];
     fourcc_inv(x, cstr);
-    std::string str = "";
+    std::string str;
     for (int i = 0; i < 4; i++) {
         uint8_t c = cstr[i];
         if (32 <= c && c < 127) {

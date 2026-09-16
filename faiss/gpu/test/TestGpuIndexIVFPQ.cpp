@@ -1,16 +1,19 @@
-/**
- * Copyright (c) Facebook, Inc. and its affiliates.
+/*
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * This source code is licensed under the MIT license found in the
  * LICENSE file in the root directory of this source tree.
  */
 
 #include <faiss/IndexFlat.h>
+#include <faiss/IndexIVF.h>
 #include <faiss/IndexIVFPQ.h>
 #include <faiss/gpu/GpuIndexIVFPQ.h>
 #include <faiss/gpu/StandardGpuResources.h>
 #include <faiss/gpu/test/TestUtils.h>
 #include <faiss/gpu/utils/DeviceUtils.h>
+#include <faiss/impl/IDSelector.h>
+#include <faiss/utils/distances.h>
 #include <gtest/gtest.h>
 #include <cmath>
 #include <sstream>
@@ -35,7 +38,7 @@ void pickEncoding(int& codes, int& dim) {
     }
 }
 
-void pickRaftEncoding(int& codes, int& dim, int bitsPerCode) {
+void pickCuvsEncoding(int& codes, int& dim, int bitsPerCode) {
     // Above 32 doesn't work with no precomputed codes
     std::vector<int> dimSizes{4, 8, 10, 12, 16, 20, 24, 28, 32};
 
@@ -85,7 +88,7 @@ struct Options {
         device = faiss::gpu::randVal(0, faiss::gpu::getNumDevices() - 1);
 
         interleavedLayout = false;
-        useRaft = false;
+        useCuvs = false;
     }
 
     std::string toString() const {
@@ -101,7 +104,11 @@ struct Options {
     }
 
     float getCompareEpsilon() const {
-        return 0.035f;
+        // With very low dimensionality (e.g., dim=4, codes=2 giving
+        // dimPerSubQuantizer=2), L2 distances can be very small
+        // (near-zero), causing relative error comparisons to be
+        // unstable despite tiny absolute differences.
+        return (dim <= 8) ? 0.15f : 0.035f;
     }
 
     float getPctMaxDiff1() const {
@@ -126,7 +133,7 @@ struct Options {
     bool useFloat16;
     int device;
     bool interleavedLayout;
-    bool useRaft;
+    bool useCuvs;
 };
 
 void queryTest(Options opt, faiss::MetricType metricType) {
@@ -156,7 +163,7 @@ void queryTest(Options opt, faiss::MetricType metricType) {
     config.indicesOptions = opt.indicesOpt;
     config.useFloat16LookupTables = opt.useFloat16;
     config.interleavedLayout = opt.interleavedLayout;
-    config.use_raft = opt.useRaft;
+    config.use_cuvs = opt.useCuvs;
 
     faiss::gpu::GpuIndexIVFPQ gpuIndex(&res, &cpuIndex, config);
     gpuIndex.nprobe = opt.nprobe;
@@ -190,6 +197,11 @@ TEST(TestGpuIndexIVFPQ, Query_IP) {
 
 // Large batch sizes (>= 65536) should also work
 TEST(TestGpuIndexIVFPQ, LargeBatch) {
+    // With low-dim vectors, CPU will use non-BLAS. Force the CPU to use
+    // the BLAS for consistent comparison.
+    int saved_threshold = faiss::distance_compute_blas_threshold;
+    faiss::distance_compute_blas_threshold = 1;
+
     for (bool usePrecomputed : {false, true}) {
         Options opt;
 
@@ -202,6 +214,8 @@ TEST(TestGpuIndexIVFPQ, LargeBatch) {
 
         queryTest(opt, faiss::MetricType::METRIC_L2);
     }
+
+    faiss::distance_compute_blas_threshold = saved_threshold;
 }
 
 void testMMCodeDistance(faiss::MetricType mt) {
@@ -235,7 +249,7 @@ void testMMCodeDistance(faiss::MetricType mt) {
         config.usePrecomputedTables = false;
         config.useMMCodeDistance = true;
         config.indicesOptions = opt.indicesOpt;
-        config.use_raft = false;
+        config.use_cuvs = false;
 
         // Make sure that the float16 version works as well
         config.useFloat16LookupTables = (tries % 2 == 0);
@@ -286,7 +300,7 @@ void testMMCodeDistance(faiss::MetricType mt) {
         config.device = opt.device;
         config.usePrecomputedTables = false;
         config.indicesOptions = opt.indicesOpt;
-        config.use_raft = false;
+        config.use_cuvs = false;
 
         // Make sure that the float16 version works as well
         config.useFloat16LookupTables = (dimPerSubQ == 7);
@@ -340,7 +354,7 @@ TEST(TestGpuIndexIVFPQ, Float16Coarse) {
     config.usePrecomputedTables = opt.usePrecomputed;
     config.indicesOptions = opt.indicesOpt;
     config.useFloat16LookupTables = opt.useFloat16;
-    config.use_raft = false;
+    config.use_cuvs = false;
 
     faiss::gpu::GpuIndexIVFPQ gpuIndex(&res, &cpuIndex, config);
     gpuIndex.nprobe = opt.nprobe;
@@ -386,7 +400,7 @@ void addTest(Options opt, faiss::MetricType metricType) {
     config.indicesOptions = opt.indicesOpt;
     config.useFloat16LookupTables = opt.useFloat16;
     config.interleavedLayout = opt.interleavedLayout;
-    config.use_raft = opt.useRaft;
+    config.use_cuvs = opt.useCuvs;
 
     faiss::gpu::GpuIndexIVFPQ gpuIndex(&res, &cpuIndex, config);
     gpuIndex.nprobe = opt.nprobe;
@@ -436,7 +450,7 @@ void copyToTest(Options opt) {
         config.indicesOptions = opt.indicesOpt;
         config.useFloat16LookupTables = opt.useFloat16;
         config.interleavedLayout = opt.interleavedLayout;
-        config.use_raft = opt.useRaft;
+        config.use_cuvs = opt.useCuvs;
 
         faiss::gpu::GpuIndexIVFPQ gpuIndex(
                 &res,
@@ -513,7 +527,7 @@ void copyFromTest(Options opt) {
     config.indicesOptions = opt.indicesOpt;
     config.useFloat16LookupTables = opt.useFloat16;
     config.interleavedLayout = opt.interleavedLayout;
-    config.use_raft = opt.useRaft;
+    config.use_cuvs = opt.useCuvs;
 
     // Use garbage values to see if we overwrite them
     faiss::gpu::GpuIndexIVFPQ gpuIndex(
@@ -567,8 +581,8 @@ void queryNaNTest(Options opt) {
     config.usePrecomputedTables = opt.usePrecomputed;
     config.indicesOptions = opt.indicesOpt;
     config.useFloat16LookupTables = opt.useFloat16;
-    config.use_raft = opt.useRaft;
-    config.interleavedLayout = opt.useRaft ? true : opt.interleavedLayout;
+    config.use_cuvs = opt.useCuvs;
+    config.interleavedLayout = opt.useCuvs ? true : opt.interleavedLayout;
 
     faiss::gpu::GpuIndexIVFPQ gpuIndex(
             &res,
@@ -606,7 +620,7 @@ void queryNaNTest(Options opt) {
 
 TEST(TestGpuIndexIVFPQ, QueryNaN) {
     Options opt;
-    opt.useRaft = false;
+    opt.useCuvs = false;
     queryNaNTest(opt);
 }
 
@@ -620,7 +634,7 @@ void addNaNTest(Options opt) {
     config.indicesOptions = opt.indicesOpt;
     config.useFloat16LookupTables = opt.useFloat16;
     config.interleavedLayout = opt.interleavedLayout;
-    config.use_raft = opt.useRaft;
+    config.use_cuvs = opt.useCuvs;
 
     faiss::gpu::GpuIndexIVFPQ gpuIndex(
             &res,
@@ -664,46 +678,51 @@ void addNaNTest(Options opt) {
 
 TEST(TestGpuIndexIVFPQ, AddNaN) {
     Options opt;
-    opt.useRaft = false;
+    opt.useCuvs = false;
     addNaNTest(opt);
 }
 
-#if defined USE_NVIDIA_RAFT
-TEST(TestGpuIndexIVFPQ, Query_L2_Raft) {
+#if defined USE_NVIDIA_CUVS
+TEST(TestGpuIndexIVFPQ, Query_L2_Cuvs) {
     for (int tries = 0; tries < 2; ++tries) {
         Options opt;
         opt.bitsPerCode = faiss::gpu::randVal(4, 8);
-        opt.useRaft = true;
+        opt.useCuvs = true;
         opt.interleavedLayout = true;
         opt.usePrecomputed = false;
         opt.indicesOpt = faiss::gpu::INDICES_64_BIT;
-        pickRaftEncoding(opt.codes, opt.dim, opt.bitsPerCode);
+        pickCuvsEncoding(opt.codes, opt.dim, opt.bitsPerCode);
         queryTest(opt, faiss::MetricType::METRIC_L2);
     }
 }
 
-TEST(TestGpuIndexIVFPQ, Query_IP_Raft) {
+TEST(TestGpuIndexIVFPQ, Query_IP_Cuvs) {
     for (int tries = 0; tries < 2; ++tries) {
         Options opt;
         opt.bitsPerCode = faiss::gpu::randVal(4, 8);
-        opt.useRaft = true;
+        opt.useCuvs = true;
         opt.interleavedLayout = true;
         opt.usePrecomputed = false;
         opt.indicesOpt = faiss::gpu::INDICES_64_BIT;
-        pickRaftEncoding(opt.codes, opt.dim, opt.bitsPerCode);
+        pickCuvsEncoding(opt.codes, opt.dim, opt.bitsPerCode);
         queryTest(opt, faiss::MetricType::METRIC_INNER_PRODUCT);
     }
 }
 
 // Large batch sizes (>= 65536) should also work
-TEST(TestGpuIndexIVFPQ, LargeBatch_Raft) {
+TEST(TestGpuIndexIVFPQ, LargeBatch_Cuvs) {
+    // See LargeBatch comment: force CPU BLAS path to match GPU GEMM
+    // decomposition for consistent L2 distance computation.
+    int saved_threshold = faiss::distance_compute_blas_threshold;
+    faiss::distance_compute_blas_threshold = 1;
+
     Options opt;
 
     // override for large sizes
     opt.dim = 4;
     opt.numQuery = 100000;
     opt.codes = 2;
-    opt.useRaft = true;
+    opt.useCuvs = true;
     opt.interleavedLayout = true;
     opt.usePrecomputed = false;
     opt.useFloat16 = false;
@@ -711,75 +730,77 @@ TEST(TestGpuIndexIVFPQ, LargeBatch_Raft) {
     opt.bitsPerCode = 8;
 
     queryTest(opt, faiss::MetricType::METRIC_L2);
+
+    faiss::distance_compute_blas_threshold = saved_threshold;
 }
 
-TEST(TestGpuIndexIVFPQ, CopyFrom_Raft) {
+TEST(TestGpuIndexIVFPQ, CopyFrom_Cuvs) {
     Options opt;
-    opt.useRaft = true;
+    opt.useCuvs = true;
     opt.interleavedLayout = true;
     opt.bitsPerCode = faiss::gpu::randVal(4, 8);
     opt.usePrecomputed = false;
     opt.indicesOpt = faiss::gpu::INDICES_64_BIT;
-    pickRaftEncoding(opt.codes, opt.dim, opt.bitsPerCode);
+    pickCuvsEncoding(opt.codes, opt.dim, opt.bitsPerCode);
     copyFromTest(opt);
 }
 
-TEST(TestGpuIndexIVFPQ, Add_L2_Raft) {
+TEST(TestGpuIndexIVFPQ, Add_L2_Cuvs) {
     for (int tries = 0; tries < 2; ++tries) {
         Options opt;
-        opt.useRaft = true;
+        opt.useCuvs = true;
         opt.interleavedLayout = true;
         opt.bitsPerCode = faiss::gpu::randVal(4, 8);
         opt.usePrecomputed = false;
         opt.indicesOpt = faiss::gpu::INDICES_64_BIT;
-        pickRaftEncoding(opt.codes, opt.dim, opt.bitsPerCode);
+        pickCuvsEncoding(opt.codes, opt.dim, opt.bitsPerCode);
         addTest(opt, faiss::METRIC_L2);
     }
 }
 
-TEST(TestGpuIndexIVFPQ, Add_IP_Raft) {
+TEST(TestGpuIndexIVFPQ, Add_IP_Cuvs) {
     for (int tries = 0; tries < 2; ++tries) {
         Options opt;
-        opt.useRaft = true;
+        opt.useCuvs = true;
         opt.interleavedLayout = true;
         opt.bitsPerCode = faiss::gpu::randVal(4, 8);
         opt.usePrecomputed = false;
         opt.indicesOpt = faiss::gpu::INDICES_64_BIT;
-        pickRaftEncoding(opt.codes, opt.dim, opt.bitsPerCode);
+        pickCuvsEncoding(opt.codes, opt.dim, opt.bitsPerCode);
         addTest(opt, faiss::METRIC_INNER_PRODUCT);
     }
 }
 
-TEST(TestGpuIndexIVFPQ, QueryNaN_Raft) {
+TEST(TestGpuIndexIVFPQ, QueryNaN_Cuvs) {
     Options opt;
-    opt.useRaft = true;
+    opt.useCuvs = true;
     opt.interleavedLayout = true;
     opt.bitsPerCode = faiss::gpu::randVal(4, 8);
     opt.usePrecomputed = false;
     opt.indicesOpt = faiss::gpu::INDICES_64_BIT;
-    pickRaftEncoding(opt.codes, opt.dim, opt.bitsPerCode);
+    pickCuvsEncoding(opt.codes, opt.dim, opt.bitsPerCode);
     queryNaNTest(opt);
 }
 
-TEST(TestGpuIndexIVFPQ, AddNaN_Raft) {
+TEST(TestGpuIndexIVFPQ, AddNaN_Cuvs) {
     Options opt;
-    opt.useRaft = true;
+    opt.useCuvs = true;
     opt.interleavedLayout = true;
     opt.bitsPerCode = faiss::gpu::randVal(4, 8);
     opt.usePrecomputed = false;
     opt.indicesOpt = faiss::gpu::INDICES_64_BIT;
-    pickRaftEncoding(opt.codes, opt.dim, opt.bitsPerCode);
+    pickCuvsEncoding(opt.codes, opt.dim, opt.bitsPerCode);
     addNaNTest(opt);
 }
 
-TEST(TestGpuIndexIVFPQ, CopyTo_Raft) {
+TEST(TestGpuIndexIVFPQ, CopyTo_Cuvs) {
     Options opt;
-    opt.useRaft = true;
+    opt.useCuvs = true;
     opt.interleavedLayout = true;
     opt.bitsPerCode = faiss::gpu::randVal(4, 8);
     opt.usePrecomputed = false;
     opt.indicesOpt = faiss::gpu::INDICES_64_BIT;
-    pickRaftEncoding(opt.codes, opt.dim, opt.bitsPerCode);
+    pickCuvsEncoding(opt.codes, opt.dim, opt.bitsPerCode);
     copyToTest(opt);
 }
 #endif
@@ -824,7 +845,7 @@ TEST(TestGpuIndexIVFPQ, UnifiedMemory) {
     faiss::gpu::GpuIndexIVFPQConfig config;
     config.device = device;
     config.memorySpace = faiss::gpu::MemorySpace::Unified;
-    config.use_raft = false;
+    config.use_cuvs = false;
 
     faiss::gpu::GpuIndexIVFPQ gpuIndex(
             &res,
@@ -848,12 +869,12 @@ TEST(TestGpuIndexIVFPQ, UnifiedMemory) {
             0.1f,
             0.015f);
 
-#if defined USE_NVIDIA_RAFT
+#if defined USE_NVIDIA_CUVS
     config.interleavedLayout = true;
-    config.use_raft = true;
+    config.use_cuvs = true;
     config.indicesOptions = faiss::gpu::INDICES_64_BIT;
 
-    faiss::gpu::GpuIndexIVFPQ raftGpuIndex(
+    faiss::gpu::GpuIndexIVFPQ cuvsGpuIndex(
             &res,
             dim,
             numCentroids,
@@ -861,12 +882,12 @@ TEST(TestGpuIndexIVFPQ, UnifiedMemory) {
             bitsPerCode,
             faiss::METRIC_L2,
             config);
-    raftGpuIndex.copyFrom(&cpuIndex);
-    raftGpuIndex.nprobe = nprobe;
+    cuvsGpuIndex.copyFrom(&cpuIndex);
+    cuvsGpuIndex.nprobe = nprobe;
 
     faiss::gpu::compareIndices(
             cpuIndex,
-            raftGpuIndex,
+            cuvsGpuIndex,
             numQuery,
             dim,
             k,
@@ -876,6 +897,62 @@ TEST(TestGpuIndexIVFPQ, UnifiedMemory) {
             0.015f);
 #endif
 }
+
+void testIDSelectorIVFPQ(faiss::MetricType metricType) {
+    Options opt;
+
+    std::vector<float> trainVecs = faiss::gpu::randVecs(opt.numTrain, opt.dim);
+    std::vector<float> addVecs = faiss::gpu::randVecs(opt.numAdd, opt.dim);
+
+    faiss::IndexFlatL2 quantizerL2(opt.dim);
+    faiss::IndexFlatIP quantizerIP(opt.dim);
+    faiss::Index* quantizer = metricType == faiss::METRIC_L2
+            ? (faiss::Index*)&quantizerL2
+            : (faiss::Index*)&quantizerIP;
+
+    faiss::IndexIVFPQ cpuIndex(
+            quantizer, opt.dim, opt.numCentroids, opt.codes, opt.bitsPerCode);
+    cpuIndex.metric_type = metricType;
+    cpuIndex.train(opt.numTrain, trainVecs.data());
+    cpuIndex.add(opt.numAdd, addVecs.data());
+
+    faiss::gpu::StandardGpuResources res;
+    res.noTempMemory();
+
+    faiss::gpu::GpuIndexIVFPQConfig config;
+    config.device = opt.device;
+    config.indicesOptions = faiss::gpu::INDICES_64_BIT;
+    config.interleavedLayout = true;
+    config.use_cuvs = true;
+
+    faiss::gpu::GpuIndexIVFPQ gpuIndex(&res, &cpuIndex, config);
+    gpuIndex.nprobe = opt.nprobe;
+
+    auto queryVecs = faiss::gpu::randVecs(opt.numQuery, opt.dim);
+    faiss::gpu::TestIDSelectorStruct selector_struct(opt.numAdd);
+    faiss::SearchParametersIVF search_params;
+    search_params.nprobe = opt.nprobe;
+    for (auto& [selectorName, selector] : selector_struct.selector_map) {
+        search_params.sel = selector.get();
+        faiss::gpu::testIDSelectorSearch(
+                &gpuIndex,
+                &search_params,
+                queryVecs,
+                opt.numQuery,
+                opt.k,
+                selectorName);
+    }
+}
+
+#if defined USE_NVIDIA_CUVS
+TEST(TestCuvsGpuIndexIVFPQ, IDSelector_L2) {
+    testIDSelectorIVFPQ(faiss::METRIC_L2);
+}
+
+TEST(TestCuvsGpuIndexIVFPQ, IDSelector_IP) {
+    testIDSelectorIVFPQ(faiss::METRIC_INNER_PRODUCT);
+}
+#endif
 
 int main(int argc, char** argv) {
     testing::InitGoogleTest(&argc, argv);

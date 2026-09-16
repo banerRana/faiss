@@ -1,5 +1,5 @@
-/**
- * Copyright (c) Facebook, Inc. and its affiliates.
+/*
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * This source code is licensed under the MIT license found in the
  * LICENSE file in the root directory of this source tree.
@@ -20,10 +20,11 @@ namespace faiss {
  * RangeSearchResult
  ***********************************************************************/
 
-RangeSearchResult::RangeSearchResult(size_t nq, bool alloc_lims) : nq(nq) {
+RangeSearchResult::RangeSearchResult(size_t nq_in, bool alloc_lims)
+        : nq(nq_in) {
     if (alloc_lims) {
-        lims = new size_t[nq + 1];
-        memset(lims, 0, sizeof(*lims) * (nq + 1));
+        lims = new size_t[nq_in + 1];
+        memset(lims, 0, sizeof(*lims) * (nq_in + 1));
     } else {
         lims = nullptr;
     }
@@ -36,10 +37,10 @@ RangeSearchResult::RangeSearchResult(size_t nq, bool alloc_lims) : nq(nq) {
 /// for each query
 void RangeSearchResult::do_allocation() {
     // works only if all the partial results are aggregated
-    // simulatenously
+    // simultaneously
     FAISS_THROW_IF_NOT(labels == nullptr && distances == nullptr);
     size_t ofs = 0;
-    for (int i = 0; i < nq; i++) {
+    for (size_t i = 0; i < nq; i++) {
         size_t n = lims[i];
         lims[i] = ofs;
         ofs += n;
@@ -59,12 +60,12 @@ RangeSearchResult::~RangeSearchResult() {
  * BufferList
  ***********************************************************************/
 
-BufferList::BufferList(size_t buffer_size) : buffer_size(buffer_size) {
-    wp = buffer_size;
+BufferList::BufferList(size_t buffer_size_in) : buffer_size(buffer_size_in) {
+    wp = buffer_size_in;
 }
 
 BufferList::~BufferList() {
-    for (int i = 0; i < buffers.size(); i++) {
+    for (size_t i = 0; i < buffers.size(); i++) {
         delete[] buffers[i].ids;
         delete[] buffers[i].dis;
     }
@@ -86,7 +87,7 @@ void BufferList::append_buffer() {
     wp = 0;
 }
 
-/// copy elemnts ofs:ofs+n-1 seen as linear data in the buffers to
+/// copy elements ofs:ofs+n-1 seen as linear data in the buffers to
 /// tables dest_ids, dest_dis
 void BufferList::copy_range(
         size_t ofs,
@@ -140,7 +141,7 @@ void RangeSearchPartialResult::finalize() {
 
 /// called by range_search before do_allocation
 void RangeSearchPartialResult::set_lims() {
-    for (int i = 0; i < queries.size(); i++) {
+    for (size_t i = 0; i < queries.size(); i++) {
         RangeQueryResult& qres = queries[i];
         res->lims[qres.qno] = qres.nres;
     }
@@ -149,7 +150,7 @@ void RangeSearchPartialResult::set_lims() {
 /// called by range_search after do_allocation
 void RangeSearchPartialResult::copy_result(bool incremental) {
     size_t ofs = 0;
-    for (int i = 0; i < queries.size(); i++) {
+    for (size_t i = 0; i < queries.size(); i++) {
         RangeQueryResult& qres = queries[i];
 
         copy_range(
@@ -168,23 +169,26 @@ void RangeSearchPartialResult::merge(
         std::vector<RangeSearchPartialResult*>& partial_results,
         bool do_delete) {
     int npres = partial_results.size();
-    if (npres == 0)
+    if (npres == 0) {
         return;
+    }
     RangeSearchResult* result = partial_results[0]->res;
     size_t nx = result->nq;
 
     // count
     for (const RangeSearchPartialResult* pres : partial_results) {
-        if (!pres)
+        if (!pres) {
             continue;
+        }
         for (const RangeQueryResult& qres : pres->queries) {
             result->lims[qres.qno] += qres.nres;
         }
     }
     result->do_allocation();
     for (int j = 0; j < npres; j++) {
-        if (!partial_results[j])
+        if (!partial_results[j]) {
             continue;
+        }
         partial_results[j]->copy_result(true);
         if (do_delete) {
             delete partial_results[j];

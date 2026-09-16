@@ -1,5 +1,5 @@
-/**
- * Copyright (c) Facebook, Inc. and its affiliates.
+/*
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * This source code is licensed under the MIT license found in the
  * LICENSE file in the root directory of this source tree.
@@ -22,7 +22,7 @@ namespace {
 
 // IndexBinary needs to update the code_size when d is set...
 
-void sync_d(Index* index) {}
+void sync_d(Index* /*index*/) {}
 
 void sync_d(IndexBinary* index) {
     FAISS_THROW_IF_NOT(index->d % 8 == 0);
@@ -31,11 +31,13 @@ void sync_d(IndexBinary* index) {
 
 // add translation to all valid labels
 void translate_labels(int64_t n, idx_t* labels, int64_t translation) {
-    if (translation == 0)
+    if (translation == 0) {
         return;
+    }
     for (int64_t i = 0; i < n; i++) {
-        if (labels[i] < 0)
+        if (labels[i] < 0) {
             continue;
+        }
         labels[i] += translation;
     }
 }
@@ -44,38 +46,38 @@ void translate_labels(int64_t n, idx_t* labels, int64_t translation) {
 
 template <typename IndexT>
 IndexShardsTemplate<IndexT>::IndexShardsTemplate(
-        idx_t d,
+        idx_t d_,
         bool threaded,
-        bool successive_ids)
-        : ThreadedIndex<IndexT>(d, threaded), successive_ids(successive_ids) {
+        bool successive_ids_)
+        : ThreadedIndex<IndexT>(static_cast<int>(d_), threaded),
+          successive_ids(successive_ids_) {
     sync_d(this);
 }
 
 template <typename IndexT>
 IndexShardsTemplate<IndexT>::IndexShardsTemplate(
-        int d,
+        int d_,
         bool threaded,
-        bool successive_ids)
-        : ThreadedIndex<IndexT>(d, threaded), successive_ids(successive_ids) {
+        bool successive_ids_)
+        : ThreadedIndex<IndexT>(d_, threaded), successive_ids(successive_ids_) {
     sync_d(this);
 }
 
 template <typename IndexT>
 IndexShardsTemplate<IndexT>::IndexShardsTemplate(
         bool threaded,
-        bool successive_ids)
-        : ThreadedIndex<IndexT>(threaded), successive_ids(successive_ids) {
+        bool successive_ids_)
+        : ThreadedIndex<IndexT>(threaded), successive_ids(successive_ids_) {
     sync_d(this);
 }
 
 template <typename IndexT>
-void IndexShardsTemplate<IndexT>::onAfterAddIndex(IndexT* index /* unused */) {
+void IndexShardsTemplate<IndexT>::onAfterAddIndex(IndexT* /*index*/) {
     syncWithSubIndexes();
 }
 
 template <typename IndexT>
-void IndexShardsTemplate<IndexT>::onAfterRemoveIndex(
-        IndexT* index /* unused */) {
+void IndexShardsTemplate<IndexT>::onAfterRemoveIndex(IndexT* /*index*/) {
     syncWithSubIndexes();
 }
 
@@ -141,8 +143,8 @@ void IndexShardsTemplate<IndexT>::add_with_ids(
             "request them to be shifted");
 
     if (successive_ids) {
-        FAISS_THROW_IF_NOT_MSG(
-                !xids,
+        FAISS_THROW_IF_MSG(
+                xids,
                 "It makes no sense to pass in ids and "
                 "request them to be shifted");
         FAISS_THROW_IF_NOT_MSG(
@@ -199,11 +201,9 @@ void IndexShardsTemplate<IndexT>::search(
         distance_t* distances,
         idx_t* labels,
         const SearchParameters* params) const {
-    FAISS_THROW_IF_NOT_MSG(
-            !params, "search params not supported for this index");
     FAISS_THROW_IF_NOT(k > 0);
 
-    int64_t nshard = this->count();
+    int nshard = this->count();
 
     std::vector<distance_t> all_distances(nshard * k * n);
     std::vector<idx_t> all_labels(nshard * k * n);
@@ -219,7 +219,7 @@ void IndexShardsTemplate<IndexT>::search(
         }
     }
 
-    auto fn = [n, k, x, &all_distances, &all_labels, &translations](
+    auto fn = [n, k, x, params, &all_distances, &all_labels, &translations](
                       int no, const IndexT* index) {
         if (index->verbose) {
             printf("begin query shard %d on %" PRId64 " points\n", no, n);
@@ -230,7 +230,8 @@ void IndexShardsTemplate<IndexT>::search(
                 x,
                 k,
                 all_distances.data() + no * k * n,
-                all_labels.data() + no * k * n);
+                all_labels.data() + no * k * n,
+                params);
 
         translate_labels(
                 n * k, all_labels.data() + no * k * n, translations[no]);
@@ -242,8 +243,8 @@ void IndexShardsTemplate<IndexT>::search(
 
     this->runOnIndex(fn);
 
-    if (this->metric_type == METRIC_L2) {
-        merge_knn_results<idx_t, CMin<distance_t, int>>(
+    if (is_similarity_metric(this->metric_type)) {
+        merge_knn_results<idx_t, CMax<distance_t, int>>(
                 n,
                 k,
                 nshard,
@@ -252,7 +253,7 @@ void IndexShardsTemplate<IndexT>::search(
                 distances,
                 labels);
     } else {
-        merge_knn_results<idx_t, CMax<distance_t, int>>(
+        merge_knn_results<idx_t, CMin<distance_t, int>>(
                 n,
                 k,
                 nshard,
@@ -263,7 +264,7 @@ void IndexShardsTemplate<IndexT>::search(
     }
 }
 
-// explicit instanciations
+// explicit instantiations
 template struct IndexShardsTemplate<Index>;
 template struct IndexShardsTemplate<IndexBinary>;
 

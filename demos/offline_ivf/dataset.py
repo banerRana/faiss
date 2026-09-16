@@ -1,4 +1,5 @@
 # Copyright (c) Meta Platforms, Inc. and affiliates.
+#
 # This source code is licensed under the MIT license found in the
 # LICENSE file in the root directory of this source tree.
 
@@ -110,7 +111,7 @@ class MultiFileVectorDataset:
                 xb = xb[start:]
                 start = 0
             req = min(batch_size - rem, xb.shape[0])
-            buffer[rem:rem + req] = xb[:req]
+            buffer[rem : rem + req] = xb[:req]
             rem += req
             if rem == batch_size:
                 if self.normalize:

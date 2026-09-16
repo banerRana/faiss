@@ -1,5 +1,5 @@
-/**
- * Copyright (c) Facebook, Inc. and its affiliates.
+/*
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * This source code is licensed under the MIT license found in the
  * LICENSE file in the root directory of this source tree.
@@ -32,12 +32,15 @@ void MatrixStats::PerDimStats::add(float x) {
         n_inf++;
         return;
     }
-    if (x == 0)
+    if (x == 0) {
         n0++;
-    if (x < min)
+    }
+    if (x < min) {
         min = x;
-    if (x > max)
+    }
+    if (x > max) {
         max = x;
+    }
     sum += x;
     sum2 += (double)x * (double)x;
 }
@@ -46,9 +49,10 @@ void MatrixStats::PerDimStats::compute_mean_std() {
     n_valid = n - n_nan - n_inf;
     mean = sum / n_valid;
     double var = sum2 / n_valid - mean * mean;
-    if (var < 0)
+    if (var < 0) {
         var = 0;
-    stddev = sqrt(var);
+    }
+    stddev = std::sqrt(var);
 }
 
 void MatrixStats::do_comment(const char* fmt, ...) {
@@ -63,7 +67,8 @@ void MatrixStats::do_comment(const char* fmt, ...) {
     buf += size;
 }
 
-MatrixStats::MatrixStats(size_t n, size_t d, const float* x) : n(n), d(d) {
+MatrixStats::MatrixStats(size_t n_in, size_t d_in, const float* x)
+        : n(n_in), d(d_in) {
     std::vector<char> comment_buf(10000);
     buf = comment_buf.data();
     nbuf = comment_buf.size();
@@ -73,7 +78,7 @@ MatrixStats::MatrixStats(size_t n, size_t d, const float* x) : n(n), d(d) {
     if (d > 1024) {
         do_comment(
                 "indexing this many dimensions is hard, "
-                "please consider dimensionality reducution (with PCAMatrix)\n");
+                "please consider dimensionality reduction (with PCAMatrix)\n");
     }
 
     hash_value = hash_bytes((const uint8_t*)x, n * d * sizeof(*x));
@@ -95,10 +100,12 @@ MatrixStats::MatrixStats(size_t n, size_t d, const float* x) : n(n), d(d) {
             if (sum2 == 0) {
                 n0++;
             } else {
-                if (sum2 < min_norm2)
+                if (sum2 < min_norm2) {
                     min_norm2 = sum2;
-                if (sum2 > max_norm2)
+                }
+                if (sum2 > max_norm2) {
                     max_norm2 = sum2;
+                }
             }
         }
 
@@ -119,7 +126,7 @@ MatrixStats::MatrixStats(size_t n, size_t d, const float* x) : n(n), d(d) {
         }
     }
 
-    // invalid vecor stats
+    // invalid vector stats
     if (n_valid == n) {
         do_comment("no NaN or Infs in data\n");
     } else {
@@ -156,8 +163,8 @@ MatrixStats::MatrixStats(size_t n, size_t d, const float* x) : n(n), d(d) {
     }
 
     { // norm stats
-        min_norm2 = sqrt(min_norm2);
-        max_norm2 = sqrt(max_norm2);
+        min_norm2 = std::sqrt(min_norm2);
+        max_norm2 = std::sqrt(max_norm2);
         do_comment(
                 "range of L2 norms=[%g, %g] (%zd null vectors)\n",
                 min_norm2,
@@ -194,10 +201,12 @@ MatrixStats::MatrixStats(size_t n, size_t d, const float* x) : n(n), d(d) {
                 n_dangerous_range++;
             }
 
-            if (st.stddev > max_std)
+            if (st.stddev > max_std) {
                 max_std = st.stddev;
-            if (st.stddev < min_std)
+            }
+            if (st.stddev < min_std) {
                 min_std = st.stddev;
+            }
         }
 
         if (n0_2 == 0) {
@@ -221,7 +230,7 @@ MatrixStats::MatrixStats(size_t n, size_t d, const float* x) : n(n), d(d) {
         } else {
             do_comment(
                     "%zd dimensions are too large "
-                    "wrt. their variance, may loose precision "
+                    "wrt. their variance, may lose precision "
                     "in IndexFlatL2 (use CenteringTransform)\n",
                     n_dangerous_range);
         }

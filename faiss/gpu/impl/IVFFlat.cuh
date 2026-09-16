@@ -1,5 +1,5 @@
-/**
- * Copyright (c) Facebook, Inc. and its affiliates.
+/*
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * This source code is licensed under the MIT license found in the
  * LICENSE file in the root directory of this source tree.
@@ -29,7 +29,7 @@ class IVFFlat : public IVFBase {
 
     ~IVFFlat() override;
 
-    /// Find the approximate k nearest neigbors for `queries` against
+    /// Find the approximate k nearest neighbors for `queries` against
     /// our database
     void search(
             Index* coarseQuantizer,
@@ -37,7 +37,8 @@ class IVFFlat : public IVFBase {
             int nprobe,
             int k,
             Tensor<float, 2, true>& outDistances,
-            Tensor<idx_t, 2, true>& outIndices) override;
+            Tensor<idx_t, 2, true>& outIndices,
+            const IDSelector* sel = nullptr) override;
 
     /// Performs search when we are already given the IVF cells to look at
     /// (GpuIndexIVF::search_preassigned implementation)

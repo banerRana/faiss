@@ -1,11 +1,10 @@
-/**
- * Copyright (c) Facebook, Inc. and its affiliates.
+/*
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * This source code is licensed under the MIT license found in the
  * LICENSE file in the root directory of this source tree.
  */
 
-// Copyright 2004-present Facebook. All Rights Reserved.
 // -*- c -*-
 
 #ifndef FAISS_INDEX_IVF_C_H
@@ -34,6 +33,12 @@ int faiss_SearchParametersIVF_new_with(
 FAISS_DECLARE_GETTER(SearchParametersIVF, const FaissIDSelector*, sel)
 FAISS_DECLARE_GETTER_SETTER(SearchParametersIVF, size_t, nprobe)
 FAISS_DECLARE_GETTER_SETTER(SearchParametersIVF, size_t, max_codes)
+FAISS_DECLARE_GETTER_SETTER(SearchParametersIVF, size_t, max_lists_num)
+FAISS_DECLARE_GETTER_SETTER(SearchParametersIVF, int, ensure_topk_full)
+FAISS_DECLARE_GETTER_SETTER(
+        SearchParametersIVF,
+        size_t,
+        max_empty_result_buckets)
 
 /** Index based on a inverted file (IVF)
  *
@@ -175,7 +180,7 @@ inline void faiss_IndexIVFStats_init(FaissIndexIVFStats* stats) {
     faiss_IndexIVFStats_reset(stats);
 }
 
-/// global var that collects all statists
+/// global var that collects all statistics
 FaissIndexIVFStats* faiss_get_indexIVF_stats();
 
 #ifdef __cplusplus

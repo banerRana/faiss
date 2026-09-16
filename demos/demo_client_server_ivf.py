@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# Copyright (c) Facebook, Inc. and its affiliates.
+# Copyright (c) Meta Platforms, Inc. and affiliates.
 #
 # This source code is licensed under the MIT license found in the
 # LICENSE file in the root directory of this source tree.
@@ -17,13 +17,13 @@ from faiss.contrib.client_server import run_index_server, ClientIndex
 
 
 def ivecs_read(fname):
-    a = np.fromfile(fname, dtype='int32')
+    a = np.fromfile(fname, dtype="int32")
     d = a[0]
     return a.reshape(-1, d + 1)[:, 1:].copy()
 
 
 def fvecs_read(fname):
-    return ivecs_read(fname).view('float32')
+    return ivecs_read(fname).view("float32")
 
 
 #################################################################
@@ -32,7 +32,7 @@ def fvecs_read(fname):
 
 stage = int(sys.argv[1])
 
-tmpdir = '/tmp/'
+tmpdir = "/tmp/"
 
 if stage == 0:
     # train the index
@@ -57,10 +57,10 @@ if 1 <= stage <= 4:
 
 
 machine_ports = [
-    ('localhost', 12010),
-    ('localhost', 12011),
-    ('localhost', 12012),
-    ('localhost', 12013),
+    ("localhost", 12010),
+    ("localhost", 12011),
+    ("localhost", 12012),
+    ("localhost", 12013),
 ]
 v6 = False
 
@@ -78,7 +78,7 @@ if 5 <= stage <= 8:
 
 if stage == 9:
     client_index = ClientIndex(machine_ports)
-    print('index size:', client_index.ntotal)
+    print("index size:", client_index.ntotal)
     client_index.set_nprobe(16)
 
     # load query vectors and ground-truth

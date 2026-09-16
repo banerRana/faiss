@@ -1,5 +1,5 @@
-/**
- * Copyright (c) Facebook, Inc. and its affiliates.
+/*
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * This source code is licensed under the MIT license found in the
  * LICENSE file in the root directory of this source tree.
@@ -280,6 +280,63 @@ struct JaccardSimilarity {
     float denominator;
 };
 
+struct GowerDistance {
+    __host__ __device__ GowerDistance() : dist(0), valid_dims(0) {}
+
+    static constexpr bool kDirection = false; // minimize
+    static constexpr float kIdentityData = 0;
+    static constexpr float kMaxDistance = std::numeric_limits<float>::max();
+
+    __host__ __device__ void handle(float a, float b) {
+        // Skip NaN values
+        if (a != a || b != b) { // NaN check (NaN != NaN)
+            return;
+        }
+
+        if (a >= 0 && b >= 0) {
+            // Numeric dimensions should be in [0,1] range
+            if (a > 1 || b > 1) {
+                // Mark as invalid by setting to NaN
+                dist = NAN;
+                return;
+            }
+            // Numeric distance: absolute difference
+            dist += fabsf(a - b);
+        } else if (a < 0 && b < 0) {
+            // Categorical dimensions: 0 if same, 1 if different
+            dist += (a != b) ? 1.0f : 0.0f;
+        } else {
+            // Invalid mixing of numeric and categorical
+            dist = NAN;
+            return;
+        }
+        valid_dims++;
+    }
+
+    __host__ __device__ float reduce() {
+        if (valid_dims == 0 || dist != dist) { // NaN check
+            return NAN;
+        }
+        return dist / valid_dims;
+    }
+
+    __host__ __device__ void combine(const GowerDistance& v) {
+        if (dist != dist || v.dist != v.dist) { // NaN check
+            dist = NAN;
+            return;
+        }
+        dist += v.dist;
+        valid_dims += v.valid_dims;
+    }
+
+    __host__ __device__ GowerDistance zero() const {
+        return GowerDistance();
+    }
+
+    float dist;
+    int valid_dims;
+};
+
 template <typename T, bool InnerContig>
 Tensor<T, 2, InnerContig> sliceCentroids(
         Tensor<T, 2, InnerContig>& centroids,
@@ -303,7 +360,7 @@ __global__ void incrementIndex(
         int k,
         idx_t increment) {
     for (idx_t i = blockIdx.y; i < indices.getSize(0); i += gridDim.y) {
-        for (int j = threadIdx.x; j < k; j += blockDim.x) {
+        for (auto j = threadIdx.x; j < k; j += blockDim.x) {
             indices[i][idx_t(blockIdx.x) * k + j] += blockIdx.x * increment;
         }
     }

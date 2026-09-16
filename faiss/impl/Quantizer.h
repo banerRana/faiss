@@ -1,5 +1,5 @@
-/**
- * Copyright (c) Facebook, Inc. and its affiliates.
+/*
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * This source code is licensed under the MIT license found in the
  * LICENSE file in the root directory of this source tree.
@@ -16,8 +16,8 @@ struct Quantizer {
     size_t d;         ///< size of the input vectors
     size_t code_size; ///< bytes per indexed vector
 
-    explicit Quantizer(size_t d = 0, size_t code_size = 0)
-            : d(d), code_size(code_size) {}
+    explicit Quantizer(size_t d_in = 0, size_t code_size_in = 0)
+            : d(d_in), code_size(code_size_in) {}
 
     /** Train the quantizer
      *

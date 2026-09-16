@@ -9,10 +9,10 @@ from enum import Enum
 from multiprocessing.pool import ThreadPool
 from time import perf_counter
 
-import faiss  # @manual=//faiss/python:pyfaiss_gpu
+import faiss  # @manual=//faiss/python:pyfaiss
 import numpy as np
 
-from faiss.contrib.evaluation import (  # @manual=//faiss/contrib:faiss_contrib_gpu
+from faiss.contrib.evaluation import (  # @manual=//faiss/contrib:faiss_contrib
     OperatingPoints,
 )
 
@@ -91,14 +91,18 @@ def refine_distances_range(
     with ThreadPool(32) as pool:
         R = pool.map(
             lambda i: (
-                np.sum(np.square(xq[i] - xb[I[lims[i] : lims[i + 1]]]), axis=1)
-                if metric == faiss.METRIC_L2
-                else np.tensordot(
-                    xq[i], xb[I[lims[i] : lims[i + 1]]], axes=(0, 1)
+                (
+                    np.sum(
+                        np.square(xq[i] - xb[I[lims[i] : lims[i + 1]]]), axis=1
+                    )
+                    if metric == faiss.METRIC_L2
+                    else np.tensordot(
+                        xq[i], xb[I[lims[i] : lims[i + 1]]], axes=(0, 1)
+                    )
                 )
-            )
-            if lims[i + 1] > lims[i]
-            else [],
+                if lims[i + 1] > lims[i]
+                else []
+            ),
             range(len(lims) - 1),
         )
     return np.hstack(R)

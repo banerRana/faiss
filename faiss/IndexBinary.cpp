@@ -1,5 +1,5 @@
-/**
- * Copyright (c) Facebook, Inc. and its affiliates.
+/*
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * This source code is licensed under the MIT license found in the
  * LICENSE file in the root directory of this source tree.
@@ -12,12 +12,15 @@
 
 #include <cinttypes>
 #include <cstring>
+#include <typeinfo>
 
 namespace faiss {
 
-IndexBinary::IndexBinary(idx_t d, MetricType metric)
-        : d(d), code_size(d / 8), metric_type(metric) {
-    FAISS_THROW_IF_NOT(d % 8 == 0);
+IndexBinary::IndexBinary(idx_t d_, MetricType metric)
+        : d(static_cast<int>(d_)),
+          code_size(static_cast<int>(d_ / 8)),
+          metric_type(metric) {
+    FAISS_THROW_IF_NOT(d_ % 8 == 0);
 }
 
 IndexBinary::~IndexBinary() = default;
@@ -101,6 +104,17 @@ void IndexBinary::merge_from(
 void IndexBinary::check_compatible_for_merge(
         const IndexBinary& /* otherIndex */) const {
     FAISS_THROW_MSG("check_compatible_for_merge() not implemented");
+}
+
+size_t IndexBinary::sa_code_size() const {
+    return code_size;
+}
+
+void IndexBinary::add_sa_codes(
+        idx_t n,
+        const uint8_t* codes,
+        const idx_t* xids) {
+    add_with_ids(n, codes, xids);
 }
 
 } // namespace faiss

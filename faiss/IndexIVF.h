@@ -1,5 +1,5 @@
-/**
- * Copyright (c) Facebook, Inc. and its affiliates.
+/*
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * This source code is licensed under the MIT license found in the
  * LICENSE file in the root directory of this source tree.
@@ -11,9 +11,6 @@
 #define FAISS_INDEX_IVF_H
 
 #include <stdint.h>
-#include <memory>
-#include <unordered_map>
-#include <vector>
 
 #include <faiss/Clustering.h>
 #include <faiss/Index.h>
@@ -61,7 +58,7 @@ struct Level1Quantizer {
     void encode_listno(idx_t list_no, uint8_t* code) const;
     idx_t decode_listno(const uint8_t* code) const;
 
-    Level1Quantizer(Index* quantizer, size_t nlist);
+    Level1Quantizer(Index* quantizer_in, size_t nlist_in);
 
     Level1Quantizer();
 
@@ -71,6 +68,25 @@ struct Level1Quantizer {
 struct SearchParametersIVF : SearchParameters {
     size_t nprobe = 1;    ///< number of probes at query time
     size_t max_codes = 0; ///< max nb of codes to visit to do a query
+
+    /// FastScan k-NN only: maximum number of inverted lists to visit.
+    /// 0 means unlimited, i.e. bounded only by nprobe. When set together
+    /// with max_codes, either budget may stop the scan. With
+    /// ensure_topk_full, this limit is treated as at least k lists.
+    size_t max_lists_num = 0;
+
+    /// For k-NN search, make small early-stop budgets less aggressive:
+    /// max_codes is treated as at least k post-IDSelector scans. Supported
+    /// by generic IVF in parallel_mode 0 and 3, and by FastScan k-NN
+    /// implementations 10 and 11.
+    bool ensure_topk_full = false;
+
+    /// Range-search only: stop after this many consecutive probed lists add
+    /// no in-radius results. 0 disables the heuristic. This trades recall
+    /// for less work. Supported in parallel_mode 0; FastScan range search
+    /// uses implementation 10 for this option.
+    size_t max_empty_result_buckets = 0;
+
     SearchParameters* quantizer_params = nullptr;
     /// context object to pass to InvertedLists
     void* inverted_list_context = nullptr;
@@ -89,8 +105,10 @@ struct IndexIVFInterface : Level1Quantizer {
     size_t nprobe = 1;    ///< number of probes at query time
     size_t max_codes = 0; ///< max nb of codes to visit to do a query
 
-    explicit IndexIVFInterface(Index* quantizer = nullptr, size_t nlist = 0)
-            : Level1Quantizer(quantizer, nlist) {}
+    explicit IndexIVFInterface(
+            Index* quantizer_in = nullptr,
+            size_t nlist_in = 0)
+            : Level1Quantizer(quantizer_in, nlist_in) {}
 
     /** search a set of vectors, that are pre-quantized by the IVF
      *  quantizer. Fill in the corresponding heaps with the query
@@ -160,7 +178,7 @@ struct IndexIVFInterface : Level1Quantizer {
  * index maps to a list (aka inverted list or posting list), where the
  * id of the vector is stored.
  *
- * The inverted list object is required only after trainng. If none is
+ * The inverted list object is required only after training. If none is
  * set externally, an ArrayInvertedLists is used automatically.
  *
  * At search time, the vector to be searched is also quantized, and
@@ -171,7 +189,7 @@ struct IndexIVFInterface : Level1Quantizer {
  * lists are visited.
  *
  * Sub-classes implement a post-filtering of the index that refines
- * the distance estimation from the query to databse vectors.
+ * the distance estimation from the query to database vectors.
  */
 struct IndexIVF : Index, IndexIVFInterface {
     /// Access to the actual data
@@ -206,11 +224,12 @@ struct IndexIVF : Index, IndexIVFInterface {
      * identifier.
      */
     IndexIVF(
-            Index* quantizer,
-            size_t d,
-            size_t nlist,
-            size_t code_size,
-            MetricType metric = METRIC_L2);
+            Index* quantizer_in,
+            size_t d_in,
+            size_t nlist_in,
+            size_t code_size_in,
+            MetricType metric = METRIC_L2,
+            bool own_invlists_in = true);
 
     void reset() override;
 
@@ -253,12 +272,27 @@ struct IndexIVF : Index, IndexIVFInterface {
             uint8_t* codes,
             bool include_listno = false) const = 0;
 
+    /** Decodes a set of vectors as they would appear in a given set of inverted
+     * lists (inverse of encode_vectors)
+     *
+     * @param codes      input codes, size n * code_size
+     * @param x          output decoded vectors
+     * @param list_nos   input listnos, size n
+     *
+     */
+    virtual void decode_vectors(
+            idx_t n,
+            const uint8_t* codes,
+            const idx_t* list_nos,
+            float* x) const;
+
     /** Add vectors that are computed with the standalone codec
      *
      * @param codes  codes to add size n * sa_code_size()
      * @param xids   corresponding ids, size n
      */
-    void add_sa_codes(idx_t n, const uint8_t* codes, const idx_t* xids);
+    void add_sa_codes(idx_t n, const uint8_t* codes, const idx_t* xids)
+            override;
 
     /** Train the encoder for the vectors.
      *
@@ -309,13 +343,22 @@ struct IndexIVF : Index, IndexIVFInterface {
             RangeSearchResult* result,
             const SearchParameters* params = nullptr) const override;
 
+    /** search one vector with a custom result handler */
+    void search1(
+            const float* x,
+            ResultHandler& handler,
+            SearchParameters* params = nullptr) const override;
+
     /** Get a scanner for this index (store_pairs means ignore labels)
      *
-     * The default search implementation uses this to compute the distances
+     * The default search implementation uses this to compute the distances.
+     * Use sel instead of params->sel, because sel is initialized with
+     * params->sel, but may get overridden by IndexIVF's internal logic.
      */
     virtual InvertedListScanner* get_InvertedListScanner(
             bool store_pairs = false,
-            const IDSelector* sel = nullptr) const;
+            const IDSelector* sel = nullptr,
+            const IVFSearchParameters* params = nullptr) const;
 
     /** reconstruct a vector. Works only if maintain_direct_map is set to 1 or 2
      */
@@ -435,7 +478,7 @@ struct IndexIVF : Index, IndexIVFInterface {
     size_t sa_code_size() const override;
 
     /** encode a set of vectors
-     * sa_encode will call encode_vector with include_listno=true
+     * sa_encode will call encode_vectors with include_listno=true
      * @param n      nb of vectors to encode
      * @param x      the vectors to encode
      * @param bytes  output array for the codes
@@ -462,9 +505,9 @@ struct InvertedListScanner {
     const IDSelector* sel;
 
     InvertedListScanner(
-            bool store_pairs = false,
-            const IDSelector* sel = nullptr)
-            : store_pairs(store_pairs), sel(sel) {}
+            bool store_pairs_in = false,
+            const IDSelector* sel_in = nullptr)
+            : store_pairs(store_pairs_in), sel(sel_in) {}
 
     /// used in default implementation of scan_codes
     size_t code_size = 0;
@@ -473,24 +516,24 @@ struct InvertedListScanner {
     virtual void set_query(const float* query_vector) = 0;
 
     /// following codes come from this inverted list
-    virtual void set_list(idx_t list_no, float coarse_dis) = 0;
+    virtual void set_list(idx_t list_no, float coarse_dis);
 
     /// compute a single query-to-code distance
     virtual float distance_to_code(const uint8_t* code) const = 0;
 
-    /** scan a set of codes, compute distances to current query and
-     * update heap of results if necessary. Default implemetation
+    /** scan a set of codes, compute distances to current query, and
+     * update heap of results if necessary. Default implementation
      * calls distance_to_code.
      *
-     * @param n      number of codes to scan
-     * @param codes  codes to scan (n * code_size)
+     * @param n          number of codes to scan
+     * @param codes      codes to scan (n * code_size)
      * @param ids        corresponding ids (ignored if store_pairs)
      * @param distances  heap distances (size k)
      * @param labels     heap labels (size k)
      * @param k          heap size
      * @return number of heap updates performed
      */
-    virtual size_t scan_codes(
+    size_t scan_codes(
             size_t n,
             const uint8_t* codes,
             const idx_t* ids,
@@ -523,6 +566,13 @@ struct InvertedListScanner {
             float radius,
             RangeQueryResult& result,
             size_t& list_size) const;
+
+    // accumulate results with a ResultHandler
+    virtual size_t scan_codes(
+            size_t n,
+            const uint8_t* codes,
+            const idx_t* ids,
+            ResultHandler& handler) const;
 
     virtual ~InvertedListScanner() {}
 };

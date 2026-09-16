@@ -1,5 +1,5 @@
-/**
- * Copyright (c) Facebook, Inc. and its affiliates.
+/*
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * This source code is licensed under the MIT license found in the
  * LICENSE file in the root directory of this source tree.
@@ -10,6 +10,7 @@
 #include <faiss/Index.h>
 #include <faiss/MetricType.h>
 #include <faiss/gpu/GpuIndicesOptions.h>
+#include <faiss/impl/IDSelector.h>
 #include <faiss/gpu/utils/DeviceTensor.cuh>
 #include <faiss/gpu/utils/DeviceVector.cuh>
 #include <memory>
@@ -87,7 +88,15 @@ class IVFBase {
             Tensor<float, 2, true>& vecs,
             Tensor<idx_t, 1, true>& indices);
 
-    /// Find the approximate k nearest neigbors for `queries` against
+    /// Encode/add vectors to precomputed IVF lists.
+    /// The input data, indices, and precomputed list ids must be on our current
+    /// device.
+    virtual idx_t addVectorsPreassigned(
+            Tensor<float, 2, true>& vecs,
+            Tensor<idx_t, 1, true>& indices,
+            Tensor<idx_t, 1, true>& precomputedIndices);
+
+    /// Find the approximate k nearest neighbors for `queries` against
     /// our database
     virtual void search(
             Index* coarseQuantizer,
@@ -95,7 +104,8 @@ class IVFBase {
             int nprobe,
             int k,
             Tensor<float, 2, true>& outDistances,
-            Tensor<idx_t, 2, true>& outIndices) = 0;
+            Tensor<idx_t, 2, true>& outIndices,
+            const IDSelector* sel = nullptr) = 0;
 
     /// Performs search when we are already given the IVF cells to look at
     /// (GpuIndexIVF::search_preassigned implementation)
@@ -198,6 +208,15 @@ class IVFBase {
     /// Shared function to copy indices from CPU to GPU
     void addIndicesFromCpu_(idx_t listId, const idx_t* indices, idx_t numVecs);
 
+    /// Shared implementation after IVF list ids and residuals have been
+    /// computed.
+    idx_t addVectorsToLists_(
+            Tensor<float, 2, true>& vecs,
+            Tensor<float, 3, true>& residuals,
+            Tensor<idx_t, 1, true>& indices,
+            Tensor<idx_t, 2, true>& ivfIndices,
+            const std::vector<idx_t>& ivfIndicesHost);
+
    protected:
     /// Collection of GPU resources that we use
     GpuResources* resources_;
@@ -220,15 +239,15 @@ class IVFBase {
     /// Coarse quantizer centroids available on GPU
     DeviceTensor<float, 2, true> ivfCentroids_;
 
-    /// Whether or not our index uses an interleaved by 32 layout:
+    /// Whether or not our index uses an interleaved by kWarpSize layout:
     /// The default memory layout is [vector][PQ/SQ component]:
     /// (v0 d0) (v0 d1) ... (v0 dD-1) (v1 d0) (v1 d1) ...
     ///
-    /// The interleaved by 32 memory layout is:
-    /// [vector / 32][PQ/SQ component][vector % 32] with padding:
+    /// The interleaved by kWarpSize memory layout is:
+    /// [vector / kWarpSize][PQ/SQ component][vector % kWarpSize] with padding:
     /// (v0 d0) (v1 d0) ... (v31 d0) (v0 d1) (v1 d1) ... (v31 dD-1) (v32 d0)
     /// (v33 d0) ... so the list length is always a multiple of num quantizers *
-    /// 32
+    /// kWarpSize
     bool interleavedLayout_;
 
     /// How are user indices stored on the GPU?

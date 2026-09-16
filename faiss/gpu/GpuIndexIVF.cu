@@ -1,5 +1,5 @@
-/**
- * Copyright (c) Facebook, Inc. and its affiliates.
+/*
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * This source code is licensed under the MIT license found in the
  * LICENSE file in the root directory of this source tree.
@@ -16,6 +16,7 @@
 #include <faiss/impl/FaissAssert.h>
 #include <faiss/gpu/impl/IVFBase.cuh>
 #include <faiss/gpu/utils/CopyUtils.cuh>
+#include "GpuIndexIVF.h"
 
 namespace faiss {
 namespace gpu {
@@ -92,7 +93,7 @@ void GpuIndexIVF::init_() {
         GpuIndexFlatConfig config = ivfConfig_.flatConfig;
         // inherit our same device
         config.device = config_.device;
-        config.use_raft = config_.use_raft;
+        config.use_cuvs = config_.use_cuvs;
 
         if (metric_type == faiss::METRIC_L2) {
             quantizer = new GpuIndexFlatL2(resources_, d, config);
@@ -154,7 +155,7 @@ void GpuIndexIVF::copyFrom(const faiss::IndexIVF* index) {
     FAISS_ASSERT(index->nlist > 0);
     nlist = index->nlist;
 
-    validateNProbe(index->nprobe);
+    validateNProbe(index->nprobe, should_use_cuvs(config_));
     nprobe = index->nprobe;
 
     // The metric type may have changed as well, so we might have to
@@ -297,6 +298,63 @@ void GpuIndexIVF::addImpl_(idx_t n, const float* x, const idx_t* xids) {
     ntotal += n;
 }
 
+void GpuIndexIVF::addImplPrecomputed_(
+        idx_t n,
+        const float* x,
+        const idx_t* xids,
+        const idx_t* precomputed_idx) {
+    FAISS_ASSERT(baseIndex_);
+    FAISS_ASSERT(n > 0);
+    FAISS_ASSERT(xids);
+    FAISS_ASSERT(precomputed_idx);
+
+    Tensor<float, 2, true> data(const_cast<float*>(x), {n, this->d});
+    Tensor<idx_t, 1, true> labels(const_cast<idx_t*>(xids), {n});
+    Tensor<idx_t, 1, true> precomputedLists(
+            const_cast<idx_t*>(precomputed_idx), {n});
+
+    baseIndex_->addVectorsPreassigned(data, labels, precomputedLists);
+
+    ntotal += n;
+}
+
+void GpuIndexIVF::add_core(
+        idx_t n,
+        const float* x,
+        const idx_t* xids,
+        const idx_t* precomputed_idx,
+        void* inverted_list_context) {
+    DeviceScope scope(config_.device);
+    FAISS_THROW_IF_NOT_MSG(this->is_trained, "GpuIndexIVF not trained");
+    FAISS_THROW_IF_NOT_MSG(
+            precomputed_idx, "precomputed IVF assignments must not be null");
+    FAISS_THROW_IF_NOT_MSG(
+            inverted_list_context == nullptr,
+            "GpuIndexIVF::add_core does not support inverted_list_context");
+    FAISS_THROW_IF_NOT_MSG(
+            !should_use_cuvs(config_),
+            "GpuIndexIVF::add_core is not implemented for cuVS");
+    FAISS_THROW_IF_NOT_MSG(
+            baseIndex_, "GpuIndexIVF storage has not been initialized");
+
+    if (n == 0) {
+        return;
+    }
+
+    std::vector<idx_t> generatedIds;
+    if (!xids && addImplRequiresIDs_()) {
+        generatedIds.resize(n);
+        for (idx_t i = 0; i < n; ++i) {
+            generatedIds[i] = ntotal + i;
+        }
+    }
+
+    const idx_t* addIds = xids ? xids : generatedIds.data();
+    FAISS_THROW_IF_NOT_MSG(addIds, "GpuIndexIVF requires vector ids");
+
+    addPaged_(n, x, addIds, precomputed_idx);
+}
+
 int GpuIndexIVF::getCurrentNProbe_(const SearchParameters* params) const {
     size_t use_nprobe = nprobe;
     if (params) {
@@ -317,7 +375,7 @@ int GpuIndexIVF::getCurrentNProbe_(const SearchParameters* params) const {
         }
     }
 
-    validateNProbe(use_nprobe);
+    validateNProbe(use_nprobe, should_use_cuvs(config_));
     // We use int internally for nprobe
     return int(use_nprobe);
 }
@@ -341,8 +399,10 @@ void GpuIndexIVF::searchImpl_(
     Tensor<float, 2, true> outDistances(distances, {n, k});
     Tensor<idx_t, 2, true> outLabels(const_cast<idx_t*>(labels), {n, k});
 
+    const IDSelector* sel = params ? params->sel : nullptr;
+
     baseIndex_->search(
-            quantizer, queries, use_nprobe, k, outDistances, outLabels);
+            quantizer, queries, use_nprobe, k, outDistances, outLabels, sel);
 }
 
 void GpuIndexIVF::search_preassigned(
@@ -360,14 +420,14 @@ void GpuIndexIVF::search_preassigned(
     DeviceScope scope(config_.device);
     auto stream = resources_->getDefaultStream(config_.device);
 
-    FAISS_THROW_IF_NOT_MSG(
-            !store_pairs,
+    FAISS_THROW_IF_MSG(
+            store_pairs,
             "GpuIndexIVF::search_preassigned does not "
             "currently support store_pairs");
     FAISS_THROW_IF_NOT_MSG(this->is_trained, "GpuIndexIVF not trained");
     FAISS_ASSERT(baseIndex_);
 
-    validateKSelect(k);
+    validateKSelect(k, should_use_cuvs(config_));
 
     if (n == 0 || k == 0) {
         // nothing to search
@@ -375,7 +435,7 @@ void GpuIndexIVF::search_preassigned(
     }
 
     idx_t use_nprobe = params ? params->nprobe : this->nprobe;
-    validateNProbe(use_nprobe);
+    validateNProbe(use_nprobe, should_use_cuvs(config_));
 
     size_t max_codes = params ? params->max_codes : this->max_codes;
     FAISS_THROW_IF_NOT_FMT(

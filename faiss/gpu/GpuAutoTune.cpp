@@ -1,5 +1,5 @@
-/**
- * Copyright (c) Facebook, Inc. and its affiliates.
+/*
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * This source code is licensed under the MIT license found in the
  * LICENSE file in the root directory of this source tree.
@@ -17,10 +17,7 @@
 #include <faiss/gpu/GpuIndexFlat.h>
 #include <faiss/gpu/GpuIndexIVFFlat.h>
 #include <faiss/gpu/GpuIndexIVFPQ.h>
-#include <faiss/gpu/GpuIndexIVFScalarQuantizer.h>
 #include <faiss/gpu/impl/IndexUtils.h>
-#include <faiss/gpu/utils/DeviceUtils.h>
-#include <faiss/impl/FaissAssert.h>
 
 namespace faiss {
 namespace gpu {
@@ -31,7 +28,8 @@ using namespace ::faiss;
  * Parameters to auto-tune on GpuIndex'es
  **********************************************************/
 
-#define DC(classname) auto ix = dynamic_cast<const classname*>(index)
+#define DC(classname) \
+    [[maybe_unused]] auto ix = dynamic_cast<const classname*>(index)
 
 void GpuParameterSpace::initialize(const Index* index) {
     if (DC(IndexPreTransform)) {
@@ -43,21 +41,25 @@ void GpuParameterSpace::initialize(const Index* index) {
         return;
     }
     if (DC(IndexReplicas)) {
-        if (ix->count() == 0)
+        if (ix->count() == 0) {
             return;
+        }
         index = ix->at(0);
     }
     if (DC(IndexShards)) {
-        if (ix->count() == 0)
+        if (ix->count() == 0) {
             return;
+        }
         index = ix->at(0);
     }
     if (DC(GpuIndexIVF)) {
         ParameterRange& pr = add_range("nprobe");
         for (int i = 0; i < 12; i++) {
             size_t nprobe = 1 << i;
-            if (nprobe >= ix->getNumLists() || nprobe > getMaxKSelection())
+            if (nprobe >= ix->getNumLists() ||
+                nprobe > getMaxKSelection(false)) {
                 break;
+            }
             pr.values.push_back(nprobe);
         }
 
@@ -81,8 +83,9 @@ void GpuParameterSpace::set_index_parameter(
         const std::string& name,
         double val) const {
     if (DC(IndexReplicas)) {
-        for (int i = 0; i < ix->count(); i++)
+        for (int i = 0; i < ix->count(); i++) {
             set_index_parameter(ix->at(i), name, val);
+        }
         return;
     }
     if (name == "nprobe") {

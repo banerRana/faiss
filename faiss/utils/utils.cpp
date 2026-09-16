@@ -1,5 +1,5 @@
-/**
- * Copyright (c) Facebook, Inc. and its affiliates.
+/*
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * This source code is licensed under the MIT license found in the
  * LICENSE file in the root directory of this source tree.
@@ -8,14 +8,13 @@
 // -*- c++ -*-
 
 #include <faiss/Index.h>
+#include <faiss/utils/simd_levels.h>
 #include <faiss/utils/utils.h>
 
 #include <cassert>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
-
-#include <sys/types.h>
 
 #ifdef _MSC_VER
 #define NOMINMAX
@@ -31,11 +30,11 @@
 #include <algorithm>
 #include <set>
 #include <type_traits>
+#include <unordered_set>
 #include <vector>
 
 #include <faiss/impl/AuxIndexStructures.h>
 #include <faiss/impl/FaissAssert.h>
-#include <faiss/impl/platform_macros.h>
 #include <faiss/utils/random.h>
 
 #ifndef FINTEGER
@@ -105,7 +104,10 @@ int sgemv_(
 namespace faiss {
 
 // this will be set at load time from GPU Faiss
-std::string gpu_compile_options;
+std::string& ref_gpu_compile_options() {
+    static std::string gpu_compile_options;
+    return gpu_compile_options;
+}
 
 std::string get_compile_options() {
     std::string options;
@@ -115,17 +117,29 @@ std::string get_compile_options() {
     options += "OPTIMIZE ";
 #endif
 
-#ifdef __AVX2__
-    options += "AVX2 ";
-#elif __AVX512F__
-    options += "AVX512 ";
-#elif defined(__aarch64__)
-    options += "NEON ";
+#ifdef FAISS_ENABLE_DD
+    // Dynamic Dispatch mode: report DD and all available SIMD levels
+    options += "DD ";
+    int supported = SIMDConfig::supported_simd_levels;
+    for (int i = 0; i < static_cast<int>(SIMDLevel::COUNT); ++i) {
+        auto level = static_cast<SIMDLevel>(i);
+        if ((supported & (1 << i)) && level != SIMDLevel::NONE) {
+            options += to_string(level) + " ";
+        }
+    }
 #else
-    options += "GENERIC ";
+    // Static mode: report the compiled-in SIMD level
+    SIMDLevel level = SIMDConfig::get_level();
+    if (level != SIMDLevel::NONE) {
+        options += to_string(level) + " ";
+    }
 #endif
 
-    options += gpu_compile_options;
+#ifdef FAISS_ENABLE_SVS
+    options += "SVS ";
+#endif
+
+    options += ref_gpu_compile_options();
 
     return options;
 }
@@ -174,7 +188,7 @@ size_t get_mem_usage_kb() {
         char buf[256];
         if (!fgets(buf, 256, f))
             break;
-        if (sscanf(buf, "VmRSS: %ld kB", &sz) == 1)
+        if (sscanf(buf, "VmRSS: %zu kB", &sz) == 1)
             break;
     }
     fclose(f);
@@ -294,7 +308,7 @@ size_t merge_result_table_with(
         std::vector<float> tmpD(k);
 
 #pragma omp for
-        for (int64_t i = 0; i < n; i++) {
+        for (int64_t i = 0; i < static_cast<int64_t>(n); i++) {
             int64_t* lI0 = I0 + i * k;
             float* lD0 = D0 + i * k;
             const int64_t* lI1 = I1 + i * k;
@@ -349,43 +363,24 @@ size_t ranklist_intersection_size(
         const int64_t* v2_in) {
     if (k2 > k1)
         return ranklist_intersection_size(k2, v2_in, k1, v1);
-    int64_t* v2 = new int64_t[k2];
-    memcpy(v2, v2_in, sizeof(int64_t) * k2);
-    std::sort(v2, v2 + k2);
-    { // de-dup v2
-        int64_t prev = -1;
-        size_t wp = 0;
-        for (size_t i = 0; i < k2; i++) {
-            if (v2[i] != prev) {
-                v2[wp++] = prev = v2[i];
-            }
+    // erase-on-hit avoids double-counting; negatives are padding, not IDs
+    std::unordered_set<int64_t> remaining;
+    remaining.reserve(k2);
+    for (size_t i = 0; i < k2; i++) {
+        if (v2_in[i] >= 0) {
+            remaining.insert(v2_in[i]);
         }
-        k2 = wp;
     }
-    const int64_t seen_flag = int64_t{1} << 60;
     size_t count = 0;
     for (size_t i = 0; i < k1; i++) {
-        int64_t q = v1[i];
-        size_t i0 = 0, i1 = k2;
-        while (i0 + 1 < i1) {
-            size_t imed = (i1 + i0) / 2;
-            int64_t piv = v2[imed] & ~seen_flag;
-            if (piv <= q)
-                i0 = imed;
-            else
-                i1 = imed;
-        }
-        if (v2[i0] == q) {
+        if (remaining.erase(v1[i]) != 0) {
             count++;
-            v2[i0] |= seen_flag;
         }
     }
-    delete[] v2;
-
     return count;
 }
 
-double imbalance_factor(int k, const int* hist) {
+double imbalance_factor(int k, const int64_t* hist) {
     double tot = 0, uf = 0;
 
     for (int i = 0; i < k; i++) {
@@ -397,9 +392,9 @@ double imbalance_factor(int k, const int* hist) {
     return uf;
 }
 
-double imbalance_factor(int n, int k, const int64_t* assign) {
-    std::vector<int> hist(k, 0);
-    for (int i = 0; i < n; i++) {
+double imbalance_factor(int64_t n, int k, const int64_t* assign) {
+    std::vector<int64_t> hist(k, 0);
+    for (int64_t i = 0; i < n; i++) {
         hist[assign[i]]++;
     }
 
@@ -424,10 +419,10 @@ void bincode_hist(size_t n, size_t nbits, const uint8_t* codes, int* hist) {
     std::vector<int> accu(d * 256);
     const uint8_t* c = codes;
     for (size_t i = 0; i < n; i++)
-        for (int j = 0; j < d; j++)
+        for (size_t j = 0; j < d; j++)
             accu[j * 256 + *c++]++;
     memset(hist, 0, sizeof(*hist) * nbits);
-    for (int i = 0; i < d; i++) {
+    for (size_t i = 0; i < d; i++) {
         const int* ai = accu.data() + i * 256;
         int* hi = hist + i * 8;
         for (int j = 0; j < 256; j++)
@@ -449,7 +444,7 @@ uint64_t ivec_checksum(size_t n, const int32_t* assigned) {
 uint64_t bvec_checksum(size_t n, const uint8_t* a) {
     uint64_t cs = ivec_checksum(n / 4, (const int32_t*)a);
     for (size_t i = n / 4 * 4; i < n; i++) {
-        cs = cs * 65713 + a[n] * 1686049;
+        cs = cs * 65713 + a[i] * 1686049;
     }
     return cs;
 }
@@ -487,7 +482,7 @@ const float* fvecs_maybe_subsample(
     std::vector<int> subset(*n);
     rand_perm(subset.data(), *n, seed);
     float* x_subset = new float[n2 * d];
-    for (int64_t i = 0; i < n2; i++)
+    for (int64_t i = 0; i < static_cast<int64_t>(n2); i++)
         memcpy(&x_subset[i * d], &x[subset[i] * size_t(d)], sizeof(x[0]) * d);
     *n = n2;
     return x_subset;
@@ -587,9 +582,9 @@ int64_t count_gt(int64_t n, const T* row, T threshold) {
 } // namespace
 
 template <typename T>
-void CombinerRangeKNN<T>::compute_sizes(int64_t* L_res_2) {
-    this->L_res = L_res_2;
-    L_res_2[0] = 0;
+void CombinerRangeKNN<T>::compute_sizes(int64_t* L_res_init) {
+    this->L_res = L_res_init;
+    L_res_init[0] = 0;
     int64_t j = 0;
     for (int64_t i = 0; i < nq; i++) {
         int64_t n_in;
@@ -600,11 +595,11 @@ void CombinerRangeKNN<T>::compute_sizes(int64_t* L_res_2) {
             n_in = lim_remain[j + 1] - lim_remain[j];
             j++;
         }
-        L_res_2[i + 1] = n_in; // L_res_2[i] + n_in;
+        L_res_init[i + 1] = n_in; // L_res_init[i] + n_in;
     }
     // cumsum
     for (int64_t i = 0; i < nq; i++) {
-        L_res_2[i + 1] += L_res_2[i];
+        L_res_init[i + 1] += L_res_init[i];
     }
 }
 

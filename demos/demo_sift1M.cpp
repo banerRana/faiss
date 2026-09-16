@@ -1,5 +1,5 @@
-/**
- * Copyright (c) Facebook, Inc. and its affiliates.
+/*
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * This source code is licensed under the MIT license found in the
  * LICENSE file in the root directory of this source tree.
@@ -12,8 +12,6 @@
 #include <cstring>
 
 #include <sys/stat.h>
-#include <sys/types.h>
-#include <unistd.h>
 
 #include <sys/time.h>
 
@@ -25,7 +23,7 @@
  *
  *   http://corpus-texmex.irisa.fr/
  *
- * and unzip it to the sudirectory sift1M.
+ * and unzip it to the subdirectory sift1M.
  **/
 
 /*****************************************************
@@ -33,7 +31,7 @@
  *****************************************************/
 
 float* fvecs_read(const char* fname, size_t* d_out, size_t* n_out) {
-    FILE* f = fopen(fname, "r");
+    FILE* f = fopen(fname, "rb");
     if (!f) {
         fprintf(stderr, "could not open %s\n", fname);
         perror("");
@@ -41,19 +39,19 @@ float* fvecs_read(const char* fname, size_t* d_out, size_t* n_out) {
     }
     int d;
     fread(&d, 1, sizeof(int), f);
-    assert((d > 0 && d < 1000000) || !"unreasonable dimension");
+    assert((d > 0 && d < 1000000) && "unreasonable dimension");
     fseek(f, 0, SEEK_SET);
     struct stat st;
     fstat(fileno(f), &st);
     size_t sz = st.st_size;
-    assert(sz % ((d + 1) * 4) == 0 || !"weird file size");
+    assert(sz % ((d + 1) * 4) == 0 && "weird file size");
     size_t n = sz / ((d + 1) * 4);
 
     *d_out = d;
     *n_out = n;
     float* x = new float[n * (d + 1)];
-    size_t nr = fread(x, sizeof(float), n * (d + 1), f);
-    assert(nr == n * (d + 1) || !"could not read whole file");
+    size_t nr __attribute__((unused)) = fread(x, sizeof(float), n * (d + 1), f);
+    assert(nr == n * (d + 1) && "could not read whole file");
 
     // shift array to remove row headers
     for (size_t i = 0; i < n; i++)
@@ -117,7 +115,7 @@ int main() {
 
         size_t nb, d2;
         float* xb = fvecs_read("sift1M/sift_base.fvecs", &d2, &nb);
-        assert(d == d2 || !"dataset does not have same dimension as train set");
+        assert(d == d2 && "dataset does not have same dimension as train set");
 
         printf("[%.3f s] Indexing database, size %ld*%ld\n",
                elapsed() - t0,
@@ -137,7 +135,7 @@ int main() {
 
         size_t d2;
         xq = fvecs_read("sift1M/sift_query.fvecs", &d2, &nq);
-        assert(d == d2 || !"query does not have same dimension as train set");
+        assert(d == d2 && "query does not have same dimension as train set");
     }
 
     size_t k;         // nb of results per query in the GT
@@ -151,7 +149,7 @@ int main() {
         // load ground-truth and convert int to long
         size_t nq2;
         int* gt_int = ivecs_read("sift1M/sift_groundtruth.ivecs", &k, &nq2);
-        assert(nq2 == nq || !"incorrect nb of ground truth entries");
+        assert(nq2 == nq && "incorrect nb of ground truth entries");
 
         gt = new faiss::idx_t[k * nq];
         for (int i = 0; i < k * nq; i++) {
@@ -200,8 +198,8 @@ int main() {
                 break;
             }
         }
-        assert(selected_params.size() >= 0 ||
-               !"could not find good enough op point");
+        assert(selected_params.size() >= 0 &&
+               "could not find good enough op point");
     }
 
     { // Use the found configuration to perform a search

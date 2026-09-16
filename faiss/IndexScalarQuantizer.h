@@ -1,5 +1,5 @@
-/**
- * Copyright (c) Facebook, Inc. and its affiliates.
+/*
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * This source code is licensed under the MIT license found in the
  * LICENSE file in the root directory of this source tree.
@@ -29,8 +29,8 @@ struct IndexScalarQuantizer : IndexFlatCodes {
     /** Constructor.
      *
      * @param d      dimensionality of the input vectors
-     * @param M      number of subquantizers
-     * @param nbits  number of bit per subvector index
+     * @param qtype  type of scalar quantizer (e.g., QT_4bit)
+     * @param metric distance metric used for search (default: METRIC_L2)
      */
     IndexScalarQuantizer(
             int d,
@@ -63,6 +63,16 @@ struct IndexScalarQuantizer : IndexFlatCodes {
  * distances are computed.
  */
 
+/// Search parameters for TurboQuant full types (QT_*_tq).
+struct IVFSQTurboQSearchParameters : IVFSearchParameters {
+    /// Query quantization bits for integer MSE pre-screening.
+    /// 0 = float path (default), 1-8 = integer popcount path.
+    uint8_t qb = 0;
+
+    /// Also use integer popcount for QJL stage (requires qb > 0).
+    bool int_qjl = false;
+};
+
 struct IndexIVFScalarQuantizer : IndexIVF {
     ScalarQuantizer sq;
 
@@ -72,7 +82,8 @@ struct IndexIVFScalarQuantizer : IndexIVF {
             size_t nlist,
             ScalarQuantizer::QuantizerType qtype,
             MetricType metric = METRIC_L2,
-            bool by_residual = true);
+            bool by_residual = true,
+            bool own_invlists = true);
 
     IndexIVFScalarQuantizer();
 
@@ -87,6 +98,12 @@ struct IndexIVFScalarQuantizer : IndexIVF {
             uint8_t* codes,
             bool include_listnos = false) const override;
 
+    void decode_vectors(
+            idx_t n,
+            const uint8_t* codes,
+            const idx_t* list_nos,
+            float* x) const override;
+
     void add_core(
             idx_t n,
             const float* x,
@@ -96,7 +113,8 @@ struct IndexIVFScalarQuantizer : IndexIVF {
 
     InvertedListScanner* get_InvertedListScanner(
             bool store_pairs,
-            const IDSelector* sel) const override;
+            const IDSelector* sel,
+            const IVFSearchParameters* params) const override;
 
     void reconstruct_from_offset(int64_t list_no, int64_t offset, float* recons)
             const override;

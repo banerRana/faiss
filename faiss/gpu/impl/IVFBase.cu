@@ -1,5 +1,5 @@
-/**
- * Copyright (c) Facebook, Inc. and its affiliates.
+/*
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * This source code is licensed under the MIT license found in the
  * LICENSE file in the root directory of this source tree.
@@ -15,6 +15,7 @@
 #include <faiss/gpu/impl/FlatIndex.cuh>
 #include <faiss/gpu/impl/IVFAppend.cuh>
 #include <faiss/gpu/impl/IVFBase.cuh>
+#include <faiss/gpu/impl/VectorResidual.cuh>
 #include <faiss/gpu/utils/CopyUtils.cuh>
 #include <faiss/gpu/utils/DeviceDefs.cuh>
 #include <faiss/gpu/utils/HostTensor.cuh>
@@ -119,11 +120,13 @@ void IVFBase::reset() {
             AllocInfo(AllocType::IVFLists, getCurrentDevice(), space_, stream);
 
     for (idx_t i = 0; i < numLists_; ++i) {
-        deviceListData_.emplace_back(std::unique_ptr<DeviceIVFList>(
-                new DeviceIVFList(resources_, info)));
+        deviceListData_.emplace_back(
+                std::unique_ptr<DeviceIVFList>(
+                        new DeviceIVFList(resources_, info)));
 
-        deviceListIndices_.emplace_back(std::unique_ptr<DeviceIVFList>(
-                new DeviceIVFList(resources_, info)));
+        deviceListIndices_.emplace_back(
+                std::unique_ptr<DeviceIVFList>(
+                        new DeviceIVFList(resources_, info)));
 
         listOffsetToUserIndex_.emplace_back(std::vector<idx_t>());
     }
@@ -633,6 +636,68 @@ idx_t IVFBase::addVectors(
     // tiny
     auto ivfIndicesHost = ivfIndices.copyToVector(stream);
 
+    return addVectorsToLists_(
+            vecs, residuals, indices, ivfIndices, ivfIndicesHost);
+}
+
+idx_t IVFBase::addVectorsPreassigned(
+        Tensor<float, 2, true>& vecs,
+        Tensor<idx_t, 1, true>& indices,
+        Tensor<idx_t, 1, true>& precomputedIndices) {
+    FAISS_ASSERT(vecs.getSize(0) == indices.getSize(0));
+    FAISS_ASSERT(vecs.getSize(0) == precomputedIndices.getSize(0));
+    FAISS_ASSERT(vecs.getSize(1) == dim_);
+
+    auto stream = resources_->getDefaultStreamCurrentDevice();
+
+    Tensor<idx_t, 2, true> ivfIndices(
+            precomputedIndices.data(), {vecs.getSize(0), 1});
+    auto ivfIndicesHost = ivfIndices.copyToVector(stream);
+
+    DeviceTensor<float, 3, true> residuals(
+            resources_,
+            makeTempAlloc(AllocType::Other, stream),
+            {vecs.getSize(0), 1, dim_});
+
+    if (useResidual_) {
+        FAISS_THROW_IF_NOT_FMT(
+                ivfCentroids_.getSize(0) == getNumLists() &&
+                        ivfCentroids_.getSize(1) == getDim(),
+                "IVF centroids not initialized for residual encoding "
+                "(got %ld x %ld, expected %ld x %ld)",
+                ivfCentroids_.getSize(0),
+                ivfCentroids_.getSize(1),
+                getNumLists(),
+                getDim());
+
+        for (idx_t i = 0; i < ivfIndicesHost.size(); ++i) {
+            idx_t listId = ivfIndicesHost[i];
+            FAISS_THROW_IF_NOT_FMT(
+                    listId >= -1 && listId < numLists_,
+                    "IVF list id %ld at vector %ld is out of bounds "
+                    "(nlist %ld)",
+                    listId,
+                    i,
+                    numLists_);
+        }
+
+        auto residuals2d = residuals.downcastOuter<2>();
+        runCalcResidual(
+                vecs, ivfCentroids_, precomputedIndices, residuals2d, stream);
+    }
+
+    return addVectorsToLists_(
+            vecs, residuals, indices, ivfIndices, ivfIndicesHost);
+}
+
+idx_t IVFBase::addVectorsToLists_(
+        Tensor<float, 2, true>& vecs,
+        Tensor<float, 3, true>& residuals,
+        Tensor<idx_t, 1, true>& indices,
+        Tensor<idx_t, 2, true>& ivfIndices,
+        const std::vector<idx_t>& ivfIndicesHost) {
+    auto stream = resources_->getDefaultStreamCurrentDevice();
+
     // Now we add the encoded vectors to the individual lists
     // First, make sure that there is space available for adding the new
     // encoded vectors and indices
@@ -653,6 +718,13 @@ idx_t IVFBase::addVectors(
     for (idx_t i = 0; i < ivfIndicesHost.size(); ++i) {
         auto listId = ivfIndicesHost[i];
 
+        FAISS_THROW_IF_NOT_FMT(
+                listId >= -1 && listId < numLists_,
+                "IVF list id %ld at vector %ld is out of bounds (nlist %ld)",
+                listId,
+                i,
+                numLists_);
+
         // Add vector could be invalid (contains NaNs etc)
         if (listId < 0) {
             listOffsetHost[i] = -1;
@@ -660,7 +732,6 @@ idx_t IVFBase::addVectors(
             continue;
         }
 
-        FAISS_ASSERT(listId < numLists_);
         ++numAdded;
         vectorIdToList[i] = listId;
 

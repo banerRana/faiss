@@ -1,4 +1,5 @@
 # Copyright (c) Meta Platforms, Inc. and affiliates.
+#
 # This source code is licensed under the MIT license found in the
 # LICENSE file in the root directory of this source tree.
 
@@ -156,9 +157,11 @@ class TestDataCreator:
 
     def _create_data_files(self, name_of_file="my_data") -> List[str]:
         """
-        Creates a dataset "my_test_data" with number of files (num_files), using padding in the files
-        name. If self.with_queries is True, it adds an extra dataset "my_queries_data" with the same number of files
-        as the "my_test_data". The default name for embeddings files is "my_data" + <padding>.npy.
+        Creates a dataset "my_test_data" with number of files (num_files),
+        using padding in the files name. If self.with_queries is True, it adds
+        an extra dataset "my_queries_data" with the same number of files as the
+        "my_test_data". The default name for embeddings files is "my_data" +
+        <padding>.npy.
         """
         filenames = []
         for i, file_size in enumerate(self.file_sizes):

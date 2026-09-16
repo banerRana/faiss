@@ -1,5 +1,5 @@
-/**
- * Copyright (c) Facebook, Inc. and its affiliates.
+/*
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * This source code is licensed under the MIT license found in the
  * LICENSE file in the root directory of this source tree.
@@ -39,7 +39,7 @@ size_t getIVFPerQueryTempMemory(size_t k, size_t nprobe, size_t maxListLength) {
     // Storage for all distances from all the IVF lists we are processing
     size_t allDistances = nprobe * maxListLength * sizeof(float);
 
-    // There are 2 streams on which computations is performed (hence the 2 *)
+    // There are 2 streams on which computation is performed (hence the 2 *)
     return 2 * (prefixSumOffsets + allDistances + sizeForFirstSelectPass);
 }
 
@@ -57,7 +57,7 @@ size_t getIVFPQPerQueryTempMemory(
             : (nprobe * numSubQuantizers * numSubQuantizerCodes *
                sizeof(float));
 
-    // There are 2 streams on which computations is performed (hence the 2 *)
+    // There are 2 streams on which computation is performed (hence the 2 *)
     // The IVF-generic temp memory allocation already takes this multi-streaming
     // into account, but we need to do so for the PQ residual distances too
     return (2 * residualDistances) +

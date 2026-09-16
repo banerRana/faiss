@@ -1,11 +1,10 @@
-/**
- * Copyright (c) Facebook, Inc. and its affiliates.
+/*
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * This source code is licensed under the MIT license found in the
  * LICENSE file in the root directory of this source tree.
  */
 
-// Copyright 2004-present Facebook. All Rights Reserved.
 // -*- c++ -*-
 
 #include "IndexIVF_c.h"
@@ -54,6 +53,15 @@ DEFINE_SETTER(SearchParametersIVF, size_t, nprobe)
 
 DEFINE_GETTER(SearchParametersIVF, size_t, max_codes)
 DEFINE_SETTER(SearchParametersIVF, size_t, max_codes)
+
+DEFINE_GETTER(SearchParametersIVF, size_t, max_lists_num)
+DEFINE_SETTER(SearchParametersIVF, size_t, max_lists_num)
+
+DEFINE_GETTER(SearchParametersIVF, int, ensure_topk_full)
+DEFINE_SETTER_STATIC(SearchParametersIVF, bool, int, ensure_topk_full)
+
+DEFINE_GETTER(SearchParametersIVF, size_t, max_empty_result_buckets)
+DEFINE_SETTER(SearchParametersIVF, size_t, max_empty_result_buckets)
 
 /// IndexIVF definitions
 

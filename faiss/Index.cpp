@@ -1,5 +1,5 @@
-/**
- * Copyright (c) Facebook, Inc. and its affiliates.
+/*
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * This source code is licensed under the MIT license found in the
  * LICENSE file in the root directory of this source tree.
@@ -24,12 +24,20 @@ void Index::train(idx_t /*n*/, const float* /*x*/) {
     // does nothing by default
 }
 
+void Index::train_with_queries(
+        idx_t /*n*/,
+        const float* /*x*/,
+        idx_t /*n_train_q*/,
+        const float* /*xq_train*/) {
+    // does nothing by default
+}
+
 void Index::range_search(
         idx_t,
         const float*,
         float,
         RangeSearchResult*,
-        const SearchParameters* params) const {
+        const SearchParameters* /*params*/) const {
     FAISS_THROW_MSG("range search not implemented");
 }
 
@@ -47,7 +55,7 @@ void Index::add_with_ids(
 
 size_t Index::remove_ids(const IDSelector& /*sel*/) {
     FAISS_THROW_MSG("remove_ids not implemented for this type of index");
-    return -1;
+    return static_cast<size_t>(-1);
 }
 
 void Index::reconstruct(idx_t, float*) const {
@@ -104,9 +112,24 @@ void Index::search_and_reconstruct(
     }
 }
 
+void Index::search_subset(
+        idx_t /*n*/,
+        const float* /*x*/,
+        idx_t /*k_base*/,
+        const idx_t* /*base_labels*/,
+        idx_t /*k*/,
+        float* /*distances*/,
+        idx_t* /*labels*/) const {
+    FAISS_THROW_MSG("search_subset not implemented for this type of index");
+}
+
+void Index::search1(const float*, ResultHandler&, SearchParameters*) const {
+    FAISS_THROW_MSG("search1 not implemented for this type of index");
+}
+
 void Index::compute_residual(const float* x, float* residual, idx_t key) const {
     reconstruct(key, residual);
-    for (size_t i = 0; i < d; i++) {
+    for (int i = 0; i < d; i++) {
         residual[i] = x[i] - residual[i];
     }
 }
@@ -134,6 +157,10 @@ void Index::sa_decode(idx_t, const uint8_t*, float*) const {
     FAISS_THROW_MSG("standalone codec not implemented for this type of index");
 }
 
+void Index::add_sa_codes(idx_t, const uint8_t*, const idx_t*) {
+    FAISS_THROW_MSG("add_sa_codes not implemented for this type of index");
+}
+
 namespace {
 
 // storage that explicitly reconstructs vectors before computing distances
@@ -141,9 +168,10 @@ struct GenericDistanceComputer : DistanceComputer {
     size_t d;
     const Index& storage;
     std::vector<float> buf;
-    const float* q;
+    const float* q = nullptr;
 
-    explicit GenericDistanceComputer(const Index& storage) : storage(storage) {
+    explicit GenericDistanceComputer(const Index& storage_in)
+            : storage(storage_in) {
         d = storage.d;
         buf.resize(d * 2);
     }

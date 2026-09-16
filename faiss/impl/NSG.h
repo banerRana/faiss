@@ -1,22 +1,20 @@
-/**
- * Copyright (c) Facebook, Inc. and its affiliates.
+/*
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * This source code is licensed under the MIT license found in the
  * LICENSE file in the root directory of this source tree.
  */
 
-// -*- c++ -*-
-
 #pragma once
 
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <vector>
 
 #include <omp.h>
 
 #include <faiss/Index.h>
-#include <faiss/impl/AuxIndexStructures.h>
 #include <faiss/impl/FaissAssert.h>
 #include <faiss/utils/Heap.h>
 #include <faiss/utils/random.h>
@@ -40,10 +38,12 @@ namespace faiss {
  */
 
 struct DistanceComputer; // from AuxIndexStructures
-struct Neighbor;
-struct Node;
+struct VisitedTable;
 
 namespace nsg {
+
+struct Neighbor;
+struct Node;
 
 /***********************************************************
  * Graph structure to store a graph.
@@ -60,22 +60,24 @@ struct Graph {
     bool own_fields; ///< the underlying data owned by itself or not
 
     // construct from a known graph
-    Graph(node_t* data, int N, int K)
-            : data(data), K(K), N(N), own_fields(false) {}
+    Graph(node_t* data_in, int N_in, int K_in)
+            : data(data_in), K(K_in), N(N_in), own_fields(false) {}
 
     // construct an empty graph
     // NOTE: the newly allocated data needs to be destroyed at destruction time
-    Graph(int N, int K) : K(K), N(N), own_fields(true) {
-        data = new node_t[N * K];
+    Graph(int N_in, int K_in) : K(K_in), N(N_in), own_fields(true) {
+        size_t total = faiss::mul_no_overflow(
+                (size_t)N_in, (size_t)K_in, "Graph allocation");
+        data = new node_t[total];
     }
 
     // copy constructor
     Graph(const Graph& g) : Graph(g.N, g.K) {
-        memcpy(data, g.data, N * K * sizeof(node_t));
+        memcpy(data, g.data, (size_t)N * (size_t)K * sizeof(node_t));
     }
 
     // release the allocated memory if needed
-    ~Graph() {
+    virtual ~Graph() {
         if (own_fields) {
             delete[] data;
         }
@@ -83,12 +85,27 @@ struct Graph {
 
     // access the j-th neighbor of node i
     inline node_t at(int i, int j) const {
-        return data[i * K + j];
+        FAISS_CHECK_RANGE_DEBUG(i, 0, N);
+        FAISS_CHECK_RANGE_DEBUG(j, 0, K);
+        return data[(size_t)i * K + j];
     }
 
     // access the j-th neighbor of node i by reference
     inline node_t& at(int i, int j) {
-        return data[i * K + j];
+        FAISS_CHECK_RANGE_DEBUG(i, 0, N);
+        FAISS_CHECK_RANGE_DEBUG(j, 0, K);
+        return data[(size_t)i * K + j];
+    }
+
+    // get all neighbors of node i (used during search only)
+    virtual size_t get_neighbors(int i, node_t* neighbors) const {
+        for (int j = 0; j < K; j++) {
+            if (data[(size_t)i * K + j] < 0) {
+                return j;
+            }
+            neighbors[j] = data[(size_t)i * K + j];
+        }
+        return K;
     }
 };
 
@@ -99,6 +116,8 @@ DistanceComputer* storage_distance_computer(const Index* storage);
 struct NSG {
     /// internal storage of vectors (32 bits: this is expensive)
     using storage_idx_t = int32_t;
+    using Node = nsg::Node;
+    using Neighbor = nsg::Neighbor;
 
     int ntotal = 0; ///< nb of nodes
 
@@ -110,9 +129,12 @@ struct NSG {
     // search-time parameters
     int search_L = 16; ///< length of the search path
 
+    // See impl/VisitedTable.h.
+    std::optional<bool> use_visited_hashset;
+
     int enterpoint; ///< enterpoint
 
-    std::shared_ptr<nsg::Graph<int>> final_graph; ///< NSG graph structure
+    std::shared_ptr<nsg::Graph<int32_t>> final_graph; ///< NSG graph structure
 
     bool is_built = false; ///< NSG is built or not
 

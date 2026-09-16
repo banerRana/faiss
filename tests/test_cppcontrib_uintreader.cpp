@@ -1,5 +1,5 @@
-/**
- * Copyright (c) Facebook, Inc. and its affiliates.
+/*
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * This source code is licensed under the MIT license found in the
  * LICENSE file in the root directory of this source tree.
@@ -43,8 +43,8 @@ struct TestLoop {
 template <intptr_t N_ELEMENTS, intptr_t CODE_BITS>
 struct TestLoop<N_ELEMENTS, CODE_BITS, N_ELEMENTS> {
     static void test(
-            const uint8_t* const container,
-            faiss::BitstringReader& br) {}
+            const uint8_t* const /*container*/,
+            faiss::BitstringReader& /*br*/) {}
 };
 
 template <intptr_t N_ELEMENTS, intptr_t CODE_BITS>

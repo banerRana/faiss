@@ -1,5 +1,5 @@
-/**
- * Copyright (c) Facebook, Inc. and its affiliates.
+/*
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * This source code is licensed under the MIT license found in the
  * LICENSE file in the root directory of this source tree.
@@ -7,23 +7,19 @@
 
 #include <faiss/IndexIVFAdditiveQuantizerFastScan.h>
 
-#include <cassert>
 #include <cinttypes>
 #include <cstdio>
-
-#include <omp.h>
 
 #include <memory>
 
 #include <faiss/impl/AuxIndexStructures.h>
 #include <faiss/impl/FaissAssert.h>
-#include <faiss/impl/LookupTableScaler.h>
-#include <faiss/impl/pq4_fast_scan.h>
+#include <faiss/impl/fast_scan/FastScanDistancePostProcessing.h>
+#include <faiss/impl/fast_scan/fast_scan.h>
+#include <faiss/impl/simd_dispatch.h>
 #include <faiss/invlists/BlockInvertedLists.h>
 #include <faiss/utils/distances.h>
-#include <faiss/utils/hamming.h>
 #include <faiss/utils/quantize_lut.h>
-#include <faiss/utils/simdlib.h>
 #include <faiss/utils/utils.h>
 
 namespace faiss {
@@ -33,44 +29,46 @@ inline size_t roundup(size_t a, size_t b) {
 }
 
 IndexIVFAdditiveQuantizerFastScan::IndexIVFAdditiveQuantizerFastScan(
-        Index* quantizer,
-        AdditiveQuantizer* aq,
-        size_t d,
-        size_t nlist,
+        Index* quantizer_,
+        AdditiveQuantizer* aq_,
+        size_t d_,
+        size_t nlist_,
         MetricType metric,
-        int bbs)
-        : IndexIVFFastScan(quantizer, d, nlist, 0, metric) {
-    if (aq != nullptr) {
-        init(aq, nlist, metric, bbs);
+        int bbs_,
+        bool own_invlists_)
+        : IndexIVFFastScan(quantizer_, d_, nlist_, 0, metric, own_invlists_) {
+    if (aq_ != nullptr) {
+        init(aq_, nlist_, metric, bbs_, own_invlists_);
     }
 }
 
 void IndexIVFAdditiveQuantizerFastScan::init(
-        AdditiveQuantizer* aq,
-        size_t nlist,
+        AdditiveQuantizer* aq_,
+        size_t nlist_,
         MetricType metric,
-        int bbs) {
-    FAISS_THROW_IF_NOT(aq != nullptr);
-    FAISS_THROW_IF_NOT(!aq->nbits.empty());
-    FAISS_THROW_IF_NOT(aq->nbits[0] == 4);
+        int bbs_,
+        bool own_invlists_) {
+    FAISS_THROW_IF_NOT(aq_);
+    FAISS_THROW_IF_MSG(aq_->nbits.empty(), "quantizer nbits must not be empty");
+    FAISS_THROW_IF_NOT(aq_->nbits[0] == 4);
     if (metric == METRIC_INNER_PRODUCT) {
         FAISS_THROW_IF_NOT_MSG(
-                aq->search_type == AdditiveQuantizer::ST_LUT_nonorm,
+                aq_->search_type == AdditiveQuantizer::ST_LUT_nonorm,
                 "Search type must be ST_LUT_nonorm for IP metric");
     } else {
         FAISS_THROW_IF_NOT_MSG(
-                aq->search_type == AdditiveQuantizer::ST_norm_lsq2x4 ||
-                        aq->search_type == AdditiveQuantizer::ST_norm_rq2x4,
+                aq_->search_type == AdditiveQuantizer::ST_norm_lsq2x4 ||
+                        aq_->search_type == AdditiveQuantizer::ST_norm_rq2x4,
                 "Search type must be lsq2x4 or rq2x4 for L2 metric");
     }
 
-    this->aq = aq;
+    this->aq = aq_;
     if (metric_type == METRIC_L2) {
-        M = aq->M + 2; // 2x4 bits AQ
+        M = aq_->M + 2; // 2x4 bits AQ
     } else {
-        M = aq->M;
+        M = aq_->M;
     }
-    init_fastscan(M, 4, nlist, metric, bbs);
+    init_fastscan(aq_, M, 4, nlist_, metric, bbs_, own_invlists_);
 
     max_train_points = 1024 * ksub * M;
     by_residual = true;
@@ -78,23 +76,26 @@ void IndexIVFAdditiveQuantizerFastScan::init(
 
 IndexIVFAdditiveQuantizerFastScan::IndexIVFAdditiveQuantizerFastScan(
         const IndexIVFAdditiveQuantizer& orig,
-        int bbs)
+        int bbs_)
         : IndexIVFFastScan(
                   orig.quantizer,
                   orig.d,
                   orig.nlist,
                   0,
-                  orig.metric_type),
+                  orig.metric_type,
+                  orig.own_invlists),
           aq(orig.aq) {
     FAISS_THROW_IF_NOT(
             metric_type == METRIC_INNER_PRODUCT || !orig.by_residual);
 
-    init(aq, nlist, metric_type, bbs);
+    init(aq, nlist, metric_type, bbs_, own_invlists);
 
     is_trained = orig.is_trained;
     ntotal = orig.ntotal;
     nprobe = orig.nprobe;
-
+    if (!orig.own_invlists) {
+        return; // skip packing codes below
+    }
     for (size_t i = 0; i < nlist; i++) {
         size_t nb = orig.invlists->list_size(i);
         size_t nb2 = roundup(nb, bbs);
@@ -127,6 +128,10 @@ IndexIVFAdditiveQuantizerFastScan::IndexIVFAdditiveQuantizerFastScan() {
 
 IndexIVFAdditiveQuantizerFastScan::~IndexIVFAdditiveQuantizerFastScan() =
         default;
+
+size_t IndexIVFAdditiveQuantizerFastScan::fast_scan_code_size() const {
+    return M2 / 2;
+}
 
 /*********************************************************
  * Training
@@ -212,7 +217,9 @@ void IndexIVFAdditiveQuantizerFastScan::estimate_norm_scale(
     size_t index_nprobe = nprobe;
     nprobe = 1;
     CoarseQuantized cq{index_nprobe, coarse_dis.data(), coarse_ids.data()};
-    compute_LUT(n, x, cq, dis_tables, biases);
+    FastScanDistancePostProcessing empty_context{};
+
+    compute_LUT(n, x, cq, dis_tables, biases, empty_context);
     nprobe = index_nprobe;
 
     float scale = 0;
@@ -303,8 +310,7 @@ void IndexIVFAdditiveQuantizerFastScan::search(
         float* distances,
         idx_t* labels,
         const SearchParameters* params) const {
-    FAISS_THROW_IF_NOT_MSG(
-            !params, "search params not supported for this index");
+    FAISS_THROW_IF_MSG(params, "search params not supported for this index");
 
     FAISS_THROW_IF_NOT(k > 0);
     bool rescale = (rescale_norm && norm_scale > 1 && metric_type == METRIC_L2);
@@ -313,9 +319,10 @@ void IndexIVFAdditiveQuantizerFastScan::search(
         return;
     }
 
-    NormTableScaler scaler(norm_scale);
+    FastScanDistancePostProcessing context;
+    context.pq2x4_scale = norm_scale;
     IndexIVFFastScan::CoarseQuantized cq{nprobe};
-    search_dispatch_implem(n, x, k, distances, labels, cq, &scaler);
+    search_dispatch_implem(n, x, k, distances, labels, cq, context);
 }
 
 /*********************************************************
@@ -383,10 +390,11 @@ void IndexIVFAdditiveQuantizerFastScan::compute_LUT(
         const float* x,
         const CoarseQuantized& cq,
         AlignedTable<float>& dis_tables,
-        AlignedTable<float>& biases) const {
+        AlignedTable<float>& biases,
+        const FastScanDistancePostProcessing&) const {
     const size_t dim12 = ksub * M;
     const size_t ip_dim12 = aq->M * ksub;
-    const size_t nprobe = cq.nprobe;
+    const size_t cq_nprobe = cq.nprobe;
 
     dis_tables.resize(n * dim12);
 
@@ -398,19 +406,22 @@ void IndexIVFAdditiveQuantizerFastScan::compute_LUT(
     if (by_residual) {
         // bias = coef * <q, c>
         // NOTE: q^2 is not added to `biases`
-        biases.resize(n * nprobe);
+        biases.resize(n * cq_nprobe);
+        with_simd_level([&]<SIMDLevel SL>() {
 #pragma omp parallel
-        {
-            std::vector<float> centroid(d);
-            float* c = centroid.data();
+            {
+                std::vector<float> centroid(d);
+                float* c = centroid.data();
 
 #pragma omp for
-            for (idx_t ij = 0; ij < n * nprobe; ij++) {
-                int i = ij / nprobe;
-                quantizer->reconstruct(cq.ids[ij], c);
-                biases[ij] = coef * fvec_inner_product(c, x + i * d, d);
+                for (idx_t ij = 0; ij < static_cast<idx_t>(n * cq_nprobe);
+                     ij++) {
+                    idx_t i = ij / cq_nprobe;
+                    quantizer->reconstruct(cq.ids[ij], c);
+                    biases[ij] = coef * fvec_inner_product<SL>(c, x + i * d, d);
+                }
             }
-        }
+        });
     }
 
     if (metric_type == METRIC_L2) {
@@ -431,7 +442,7 @@ void IndexIVFAdditiveQuantizerFastScan::compute_LUT(
 
         // combine them
 #pragma omp parallel for if (n > 100)
-        for (idx_t i = 0; i < n; i++) {
+        for (idx_t i = 0; i < static_cast<idx_t>(n); i++) {
             float* tab = dis_tables.data() + i * dim12 + ip_dim12;
             memcpy(tab, norm_lut, norm_dim12 * sizeof(*tab));
         }
@@ -443,33 +454,28 @@ void IndexIVFAdditiveQuantizerFastScan::compute_LUT(
     }
 }
 
-void IndexIVFAdditiveQuantizerFastScan::sa_decode(
-        idx_t n,
-        const uint8_t* bytes,
-        float* x) const {
-    aq->decode(bytes, x, n);
-}
-
 /********** IndexIVFLocalSearchQuantizerFastScan ************/
 IndexIVFLocalSearchQuantizerFastScan::IndexIVFLocalSearchQuantizerFastScan(
-        Index* quantizer,
-        size_t d,
-        size_t nlist,
-        size_t M,
-        size_t nbits,
+        Index* quantizer_,
+        size_t d_,
+        size_t nlist_,
+        size_t M_,
+        size_t nbits_,
         MetricType metric,
         Search_type_t search_type,
-        int bbs)
+        int bbs_,
+        bool own_invlists_)
         : IndexIVFAdditiveQuantizerFastScan(
-                  quantizer,
+                  quantizer_,
                   nullptr,
-                  d,
-                  nlist,
+                  d_,
+                  nlist_,
                   metric,
-                  bbs),
-          lsq(d, M, nbits, search_type) {
-    FAISS_THROW_IF_NOT(nbits == 4);
-    init(&lsq, nlist, metric, bbs);
+                  bbs_,
+                  own_invlists_),
+          lsq(d_, M_, nbits_, search_type) {
+    FAISS_THROW_IF_NOT(nbits_ == 4);
+    init(&lsq, nlist_, metric, bbs_, own_invlists_);
 }
 
 IndexIVFLocalSearchQuantizerFastScan::IndexIVFLocalSearchQuantizerFastScan() {
@@ -478,24 +484,26 @@ IndexIVFLocalSearchQuantizerFastScan::IndexIVFLocalSearchQuantizerFastScan() {
 
 /********** IndexIVFResidualQuantizerFastScan ************/
 IndexIVFResidualQuantizerFastScan::IndexIVFResidualQuantizerFastScan(
-        Index* quantizer,
-        size_t d,
-        size_t nlist,
-        size_t M,
-        size_t nbits,
+        Index* quantizer_,
+        size_t d_,
+        size_t nlist_,
+        size_t M_,
+        size_t nbits_,
         MetricType metric,
         Search_type_t search_type,
-        int bbs)
+        int bbs_,
+        bool own_invlists_)
         : IndexIVFAdditiveQuantizerFastScan(
-                  quantizer,
+                  quantizer_,
                   nullptr,
-                  d,
-                  nlist,
+                  d_,
+                  nlist_,
                   metric,
-                  bbs),
-          rq(d, M, nbits, search_type) {
-    FAISS_THROW_IF_NOT(nbits == 4);
-    init(&rq, nlist, metric, bbs);
+                  bbs_,
+                  own_invlists_),
+          rq(d_, M_, nbits_, search_type) {
+    FAISS_THROW_IF_NOT(nbits_ == 4);
+    init(&rq, nlist_, metric, bbs_, own_invlists_);
 }
 
 IndexIVFResidualQuantizerFastScan::IndexIVFResidualQuantizerFastScan() {
@@ -505,25 +513,27 @@ IndexIVFResidualQuantizerFastScan::IndexIVFResidualQuantizerFastScan() {
 /********** IndexIVFProductLocalSearchQuantizerFastScan ************/
 IndexIVFProductLocalSearchQuantizerFastScan::
         IndexIVFProductLocalSearchQuantizerFastScan(
-                Index* quantizer,
-                size_t d,
-                size_t nlist,
+                Index* quantizer_,
+                size_t d_,
+                size_t nlist_,
                 size_t nsplits,
                 size_t Msub,
-                size_t nbits,
+                size_t nbits_,
                 MetricType metric,
                 Search_type_t search_type,
-                int bbs)
+                int bbs_,
+                bool own_invlists_)
         : IndexIVFAdditiveQuantizerFastScan(
-                  quantizer,
+                  quantizer_,
                   nullptr,
-                  d,
-                  nlist,
+                  d_,
+                  nlist_,
                   metric,
-                  bbs),
-          plsq(d, nsplits, Msub, nbits, search_type) {
-    FAISS_THROW_IF_NOT(nbits == 4);
-    init(&plsq, nlist, metric, bbs);
+                  bbs_,
+                  own_invlists_),
+          plsq(d_, nsplits, Msub, nbits_, search_type) {
+    FAISS_THROW_IF_NOT(nbits_ == 4);
+    init(&plsq, nlist_, metric, bbs_, own_invlists_);
 }
 
 IndexIVFProductLocalSearchQuantizerFastScan::
@@ -534,25 +544,27 @@ IndexIVFProductLocalSearchQuantizerFastScan::
 /********** IndexIVFProductResidualQuantizerFastScan ************/
 IndexIVFProductResidualQuantizerFastScan::
         IndexIVFProductResidualQuantizerFastScan(
-                Index* quantizer,
-                size_t d,
-                size_t nlist,
+                Index* quantizer_,
+                size_t d_,
+                size_t nlist_,
                 size_t nsplits,
                 size_t Msub,
-                size_t nbits,
+                size_t nbits_,
                 MetricType metric,
                 Search_type_t search_type,
-                int bbs)
+                int bbs_,
+                bool own_invlists_)
         : IndexIVFAdditiveQuantizerFastScan(
-                  quantizer,
+                  quantizer_,
                   nullptr,
-                  d,
-                  nlist,
+                  d_,
+                  nlist_,
                   metric,
-                  bbs),
-          prq(d, nsplits, Msub, nbits, search_type) {
-    FAISS_THROW_IF_NOT(nbits == 4);
-    init(&prq, nlist, metric, bbs);
+                  bbs_,
+                  own_invlists_),
+          prq(d_, nsplits, Msub, nbits_, search_type) {
+    FAISS_THROW_IF_NOT(nbits_ == 4);
+    init(&prq, nlist_, metric, bbs_, own_invlists_);
 }
 
 IndexIVFProductResidualQuantizerFastScan::

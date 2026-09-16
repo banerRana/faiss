@@ -1,5 +1,5 @@
-/**
- * Copyright (c) Facebook, Inc. and its affiliates.
+/*
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * This source code is licensed under the MIT license found in the
  * LICENSE file in the root directory of this source tree.
@@ -53,7 +53,7 @@ TEST(RCQCropping, test_cropping) {
 
     // these bits are in common between the two RCQs
     idx_t mask = ((idx_t)1 << rcq_cropped.rq.tot_bits) - 1;
-    for (int q = 0; q < nq; q++) {
+    for (size_t q = 0; q < nq; q++) {
         for (int i = 0; i < nprobe; i++) {
             idx_t fine = Iref[q * nprobe + i];
             EXPECT_GE(fine, 0);

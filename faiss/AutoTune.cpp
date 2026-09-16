@@ -1,5 +1,5 @@
-/**
- * Copyright (c) Facebook, Inc. and its affiliates.
+/*
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * This source code is licensed under the MIT license found in the
  * LICENSE file in the root directory of this source tree.
@@ -14,63 +14,57 @@
 #include <faiss/AutoTune.h>
 
 #include <cinttypes>
-#include <cmath>
-#include <typeinfo>
 
 #include <faiss/impl/FaissAssert.h>
 #include <faiss/utils/random.h>
 #include <faiss/utils/utils.h>
 
-#include <faiss/IndexFlat.h>
+#include <faiss/IndexBinaryHNSW.h>
+#include <faiss/IndexBinaryIVF.h>
 #include <faiss/IndexHNSW.h>
+#include <faiss/IndexIDMap.h>
 #include <faiss/IndexIVF.h>
-#include <faiss/IndexIVFFlat.h>
 #include <faiss/IndexIVFPQ.h>
 #include <faiss/IndexIVFPQR.h>
-#include <faiss/IndexLSH.h>
 #include <faiss/IndexPQ.h>
 #include <faiss/IndexPreTransform.h>
 #include <faiss/IndexRefine.h>
-#include <faiss/IndexScalarQuantizer.h>
 #include <faiss/IndexShardsIVF.h>
-#include <faiss/MetaIndexes.h>
-#include <faiss/VectorTransform.h>
-
-#include <faiss/IndexBinaryFlat.h>
-#include <faiss/IndexBinaryHNSW.h>
-#include <faiss/IndexBinaryIVF.h>
 
 namespace faiss {
 
-AutoTuneCriterion::AutoTuneCriterion(idx_t nq, idx_t nnn)
-        : nq(nq), nnn(nnn), gt_nnn(0) {}
+AutoTuneCriterion::AutoTuneCriterion(idx_t nq_in, idx_t nnn_in)
+        : nq(nq_in), nnn(nnn_in), gt_nnn(0) {}
 
 void AutoTuneCriterion::set_groundtruth(
-        int gt_nnn,
+        int gt_nnn_in,
         const float* gt_D_in,
         const idx_t* gt_I_in) {
-    this->gt_nnn = gt_nnn;
+    this->gt_nnn = gt_nnn_in;
     if (gt_D_in) { // allow null for this, as it is often not used
-        gt_D.resize(nq * gt_nnn);
-        memcpy(gt_D.data(), gt_D_in, sizeof(gt_D[0]) * nq * gt_nnn);
+        gt_D.resize(nq * gt_nnn_in);
+        memcpy(gt_D.data(), gt_D_in, sizeof(gt_D[0]) * nq * gt_nnn_in);
     }
-    gt_I.resize(nq * gt_nnn);
-    memcpy(gt_I.data(), gt_I_in, sizeof(gt_I[0]) * nq * gt_nnn);
+    FAISS_THROW_IF_NOT_MSG(
+            gt_I_in != nullptr, "set_groundtruth: gt_I must be non-null");
+    gt_I.resize(nq * gt_nnn_in);
+    memcpy(gt_I.data(), gt_I_in, sizeof(gt_I[0]) * nq * gt_nnn_in);
 }
 
-OneRecallAtRCriterion::OneRecallAtRCriterion(idx_t nq, idx_t R)
-        : AutoTuneCriterion(nq, R), R(R) {}
+OneRecallAtRCriterion::OneRecallAtRCriterion(idx_t nq_in, idx_t R_in)
+        : AutoTuneCriterion(nq_in, R_in), R(R_in) {}
 
 double OneRecallAtRCriterion::evaluate(const float* /*D*/, const idx_t* I)
         const {
     FAISS_THROW_IF_NOT_MSG(
-            (gt_I.size() == gt_nnn * nq && gt_nnn >= 1 && nnn >= R),
+            (gt_I.size() == static_cast<size_t>(gt_nnn * nq) && gt_nnn >= 1 &&
+             nnn >= R),
             "ground truth not initialized");
     idx_t n_ok = 0;
     for (idx_t q = 0; q < nq; q++) {
         idx_t gt_nn = gt_I[q * gt_nnn];
         const idx_t* I_line = I + q * nnn;
-        for (int i = 0; i < R; i++) {
+        for (idx_t i = 0; i < R; i++) {
             if (I_line[i] == gt_nn) {
                 n_ok++;
                 break;
@@ -80,13 +74,14 @@ double OneRecallAtRCriterion::evaluate(const float* /*D*/, const idx_t* I)
     return n_ok / double(nq);
 }
 
-IntersectionCriterion::IntersectionCriterion(idx_t nq, idx_t R)
-        : AutoTuneCriterion(nq, R), R(R) {}
+IntersectionCriterion::IntersectionCriterion(idx_t nq_in, idx_t R_in)
+        : AutoTuneCriterion(nq_in, R_in), R(R_in) {}
 
 double IntersectionCriterion::evaluate(const float* /*D*/, const idx_t* I)
         const {
     FAISS_THROW_IF_NOT_MSG(
-            (gt_I.size() == gt_nnn * nq && gt_nnn >= R && nnn >= R),
+            (gt_I.size() == static_cast<size_t>(gt_nnn * nq) && gt_nnn >= R &&
+             nnn >= R),
             "ground truth not initialized");
     int64_t n_ok = 0;
 #pragma omp parallel for reduction(+ : n_ok)
@@ -135,13 +130,14 @@ bool OperatingPoints::add(
             return false;
         }
     } else {
-        int i;
-        // stricto sensu this should be a bissection
+        size_t i;
+        // stricto sensu this should be a bisection
         for (i = 0; i < a.size(); i++) {
-            if (a[i].perf >= perf)
+            if (a[i].perf >= perf) {
                 break;
+            }
         }
-        assert(i < a.size());
+        FAISS_THROW_IF_NOT(i < a.size());
         if (t < a[i].t) {
             if (a[i].perf == perf) {
                 a[i] = op;
@@ -153,8 +149,8 @@ bool OperatingPoints::add(
         }
     }
     // remove non-optimal points from array
-    for (int i = a.size() - 1; i > 0; --i) {
-        if (a[i].t < a[i - 1].t) {
+    for (size_t i = a.size() - 1; i > 0; --i) {
+        if (a[i].t <= a[i - 1].t) {
             a.erase(a.begin() + (i - 1));
         }
     }
@@ -165,10 +161,11 @@ int OperatingPoints::merge_with(
         const OperatingPoints& other,
         const std::string& prefix) {
     int n_add = 0;
-    for (int i = 0; i < other.all_pts.size(); i++) {
+    for (size_t i = 0; i < other.all_pts.size(); i++) {
         const OperatingPoint& op = other.all_pts[i];
-        if (add(op.perf, op.t, prefix + op.key, op.cno))
+        if (add(op.perf, op.t, prefix + op.key, op.cno)) {
             n_add++;
+        }
     }
     return n_add;
 }
@@ -176,15 +173,17 @@ int OperatingPoints::merge_with(
 /// get time required to obtain a given performance measure
 double OperatingPoints::t_for_perf(double perf) const {
     const std::vector<OperatingPoint>& a = optimal_pts;
-    if (perf > a.back().perf)
+    if (perf > a.back().perf) {
         return 1e50;
-    int i0 = -1, i1 = a.size() - 1;
+    }
+    int i0 = -1, i1 = static_cast<int>(a.size()) - 1;
     while (i0 + 1 < i1) {
         int imed = (i0 + i1 + 1) / 2;
-        if (a[imed].perf < perf)
+        if (a[imed].perf < perf) {
             i0 = imed;
-        else
+        } else {
             i1 = imed;
+        }
     }
     return a[i1].t;
 }
@@ -196,7 +195,7 @@ void OperatingPoints::all_to_gnuplot(const char* fname) const {
         perror("");
         abort();
     }
-    for (int i = 0; i < all_pts.size(); i++) {
+    for (size_t i = 0; i < all_pts.size(); i++) {
         const OperatingPoint& op = all_pts[i];
         fprintf(f, "%g %g %s\n", op.perf, op.t, op.key.c_str());
     }
@@ -211,7 +210,7 @@ void OperatingPoints::optimal_to_gnuplot(const char* fname) const {
         abort();
     }
     double prev_perf = 0.0;
-    for (int i = 0; i < optimal_pts.size(); i++) {
+    for (size_t i = 0; i < optimal_pts.size(); i++) {
         const OperatingPoint& op = optimal_pts[i];
         fprintf(f, "%g %g\n", prev_perf, op.t);
         fprintf(f, "%g %g %s\n", op.perf, op.t, op.key.c_str());
@@ -227,11 +226,11 @@ void OperatingPoints::display(bool only_optimal) const {
            all_pts.size(),
            optimal_pts.size());
 
-    for (int i = 0; i < pts.size(); i++) {
+    for (size_t i = 0; i < pts.size(); i++) {
         const OperatingPoint& op = pts[i];
         const char* star = "";
         if (!only_optimal) {
-            for (int j = 0; j < optimal_pts.size(); j++) {
+            for (size_t j = 0; j < optimal_pts.size(); j++) {
                 if (op.cno == optimal_pts[j].cno) {
                     star = "*";
                     break;
@@ -274,16 +273,18 @@ ParameterSpace::ParameterSpace (Index *index):
 
 size_t ParameterSpace::n_combinations() const {
     size_t n = 1;
-    for (int i = 0; i < parameter_ranges.size(); i++)
+    for (size_t i = 0; i < parameter_ranges.size(); i++) {
         n *= parameter_ranges[i].values.size();
+    }
     return n;
 }
 
 /// get string representation of the combination
 std::string ParameterSpace::combination_name(size_t cno) const {
-    char buf[1000], *wp = buf;
+    char buf[1000];
+    char* wp = buf;
     *wp = 0;
-    for (int i = 0; i < parameter_ranges.size(); i++) {
+    for (size_t i = 0; i < parameter_ranges.size(); i++) {
         FAISS_THROW_IF_NOT_MSG(
                 buf + 1000 - wp >= 0, "Overflow detected in snprintf");
         const ParameterRange& pr = parameter_ranges[i];
@@ -301,20 +302,18 @@ std::string ParameterSpace::combination_name(size_t cno) const {
 }
 
 bool ParameterSpace::combination_ge(size_t c1, size_t c2) const {
-    for (int i = 0; i < parameter_ranges.size(); i++) {
-        int nval = parameter_ranges[i].values.size();
+    for (size_t i = 0; i < parameter_ranges.size(); i++) {
+        size_t nval = parameter_ranges[i].values.size();
         size_t j1 = c1 % nval;
         size_t j2 = c2 % nval;
-        if (!(j1 >= j2))
+        if (!(j1 >= j2)) {
             return false;
+        }
         c1 /= nval;
         c2 /= nval;
     }
     return true;
 }
-
-#define DC(classname) \
-    const classname* ix = dynamic_cast<const classname*>(index)
 
 static void init_pq_ParameterRange(
         const ProductQuantizer& pq,
@@ -322,8 +321,9 @@ static void init_pq_ParameterRange(
     if (pq.code_size % 4 == 0) {
         // Polysemous not supported for code sizes that are not a
         // multiple of 4
-        for (int i = 2; i <= pq.code_size * 8 / 2; i += 2)
+        for (size_t i = 2; i <= pq.code_size * 8 / 2; i += 2) {
             pr.values.push_back(i);
+        }
     }
     pr.values.push_back(pq.code_size * 8);
 }
@@ -339,20 +339,24 @@ ParameterRange& ParameterSpace::add_range(const std::string& name) {
     return parameter_ranges.back();
 }
 
+// Do not use this macro if ix will be unused
+#define DC(classname) \
+    const classname* ix_c = dynamic_cast<const classname*>(index)
+
 /// initialize with reasonable parameters for this type of index
 void ParameterSpace::initialize(const Index* index) {
     if (DC(IndexPreTransform)) {
-        index = ix->index;
+        index = ix_c->index;
     }
     if (DC(IndexRefine)) {
         ParameterRange& pr = add_range("k_factor_rf");
         for (int i = 0; i <= 6; i++) {
             pr.values.push_back(1 << i);
         }
-        index = ix->base_index;
+        index = ix_c->base_index;
     }
     if (DC(IndexPreTransform)) {
-        index = ix->index;
+        index = ix_c->index;
     }
 
     if (DC(IndexIVFInterface)) {
@@ -360,13 +364,14 @@ void ParameterSpace::initialize(const Index* index) {
             ParameterRange& pr = add_range("nprobe");
             for (int i = 0; i < 13; i++) {
                 size_t nprobe = 1 << i;
-                if (nprobe >= ix->nlist)
+                if (nprobe >= ix_c->nlist) {
                     break;
+                }
                 pr.values.push_back(nprobe);
             }
         }
         ParameterSpace ivf_pspace;
-        ivf_pspace.initialize(ix->quantizer);
+        ivf_pspace.initialize(ix_c->quantizer);
 
         for (const ParameterRange& p : ivf_pspace.parameter_ranges) {
             ParameterRange& pr = add_range("quantizer_" + p.name);
@@ -375,16 +380,16 @@ void ParameterSpace::initialize(const Index* index) {
     }
     if (DC(IndexPQ)) {
         ParameterRange& pr = add_range("ht");
-        init_pq_ParameterRange(ix->pq, pr);
+        init_pq_ParameterRange(ix_c->pq, pr);
     }
     if (DC(IndexIVFPQ)) {
         ParameterRange& pr = add_range("ht");
-        init_pq_ParameterRange(ix->pq, pr);
+        init_pq_ParameterRange(ix_c->pq, pr);
     }
 
     if (DC(IndexIVF)) {
         const MultiIndexQuantizer* miq =
-                dynamic_cast<const MultiIndexQuantizer*>(ix->quantizer);
+                dynamic_cast<const MultiIndexQuantizer*>(ix_c->quantizer);
         if (miq) {
             ParameterRange& pr_max_codes = add_range("max_codes");
             for (int i = 8; i < 20; i++) {
@@ -394,7 +399,7 @@ void ParameterSpace::initialize(const Index* index) {
                     std::numeric_limits<double>::infinity());
         }
     }
-    if (DC(IndexIVFPQR)) {
+    if (dynamic_cast<const IndexIVFPQR*>(index)) {
         ParameterRange& pr = add_range("k_factor");
         for (int i = 0; i <= 6; i++) {
             pr.values.push_back(1 << i);
@@ -410,24 +415,24 @@ void ParameterSpace::initialize(const Index* index) {
 
 #undef DC
 
-// non-const version
-#define DC(classname) classname* ix = dynamic_cast<classname*>(index)
-
-/// set a combination of parameters on an index
-void ParameterSpace::set_index_parameters(Index* index, size_t cno) const {
-    for (int i = 0; i < parameter_ranges.size(); i++) {
-        const ParameterRange& pr = parameter_ranges[i];
+template <typename SetParamFunc>
+static void set_index_parameters_common(
+        const ParameterSpace* ps,
+        size_t cno,
+        SetParamFunc set_param) {
+    for (size_t i = 0; i < ps->parameter_ranges.size(); i++) {
+        const ParameterRange& pr = ps->parameter_ranges[i];
         size_t j = cno % pr.values.size();
         cno /= pr.values.size();
         double val = pr.values[j];
-        set_index_parameter(index, pr.name, val);
+        set_param(pr.name, val);
     }
 }
 
-/// set a combination of parameters on an index
-void ParameterSpace::set_index_parameters(
-        Index* index,
-        const char* description_in) const {
+template <typename SetParamFunc>
+static void set_index_parameters_string_common(
+        const char* description_in,
+        SetParamFunc set_param) {
     std::string description(description_in);
     char* ptr;
 
@@ -438,9 +443,50 @@ void ParameterSpace::set_index_parameters(
         int ret = sscanf(tok, "%99[^=]=%lf", name, &val);
         FAISS_THROW_IF_NOT_FMT(
                 ret == 2, "could not interpret parameters %s", tok);
-        set_index_parameter(index, name, val);
+        set_param(name, val);
     }
 }
+
+/// set a combination of parameters on an index
+void ParameterSpace::set_index_parameters(Index* index, size_t cno) const {
+    set_index_parameters_common(
+            this, cno, [this, index](const std::string& name, double val) {
+                this->set_index_parameter(index, name, val);
+            });
+}
+
+/// set a combination of parameters on an index
+void ParameterSpace::set_index_parameters(
+        Index* index,
+        const char* description_in) const {
+    set_index_parameters_string_common(
+            description_in, [this, index](const std::string& name, double val) {
+                this->set_index_parameter(index, name, val);
+            });
+}
+
+/// set a combination of parameters on a binary index
+void ParameterSpace::set_index_parameters(IndexBinary* index, size_t cno)
+        const {
+    set_index_parameters_common(
+            this, cno, [this, index](const std::string& name, double val) {
+                this->set_index_parameter(index, name, val);
+            });
+}
+
+/// set a combination of parameters on a binary index
+void ParameterSpace::set_index_parameters(
+        IndexBinary* index,
+        const char* description_in) const {
+    set_index_parameters_string_common(
+            description_in, [this, index](const std::string& name, double val) {
+                this->set_index_parameter(index, name, val);
+            });
+}
+
+// non-const version
+// Do not use this macro if ix will be unused
+#define DC(classname) classname* ix_ = dynamic_cast<classname*>(index)
 
 void ParameterSpace::set_index_parameter(
         Index* index,
@@ -455,11 +501,11 @@ void ParameterSpace::set_index_parameter(
         // and fall through to also enable it on sub-indexes
     }
     if (DC(IndexIDMap)) {
-        set_index_parameter(ix->index, name, val);
+        set_index_parameter(ix_->index, name, val);
         return;
     }
     if (DC(IndexPreTransform)) {
-        set_index_parameter(ix->index, name, val);
+        set_index_parameter(ix_->index, name, val);
         return;
     }
     if (DC(IndexShardsIVF)) {
@@ -468,7 +514,7 @@ void ParameterSpace::set_index_parameter(
         if (name.find("quantizer_") == 0 && name != "nprobe" &&
             name != "quantizer_nprobe") {
             std::string sub_name = name.substr(strlen("quantizer_"));
-            set_index_parameter(ix->quantizer, sub_name, val);
+            set_index_parameter(ix_->quantizer, sub_name, val);
             return;
         }
     }
@@ -477,45 +523,45 @@ void ParameterSpace::set_index_parameter(
         auto fn = [this, name, val](int /* no */, Index* subIndex) {
             set_index_parameter(subIndex, name, val);
         };
-        ix->runOnIndex(fn);
+        ix_->runOnIndex(fn);
         return;
     }
     if (DC(IndexRefine)) {
         if (name == "k_factor_rf") {
-            ix->k_factor = int(val);
+            ix_->k_factor = int(val);
             return;
         }
         // otherwise it is for the sub-index
-        set_index_parameter(ix->base_index, name, val);
+        set_index_parameter(ix_->base_index, name, val);
         return;
     }
 
     if (name == "verbose") {
-        index->verbose = int(val);
         return; // last verbose that we could find
     }
 
     if (name == "nprobe") {
         if (DC(IndexIVF)) {
-            ix->nprobe = int(val);
+            ix_->nprobe = int(val);
             return;
         }
     }
 
     if (name == "ht") {
         if (DC(IndexPQ)) {
-            if (val >= ix->pq.code_size * 8) {
-                ix->search_type = IndexPQ::ST_PQ;
+            if (val >= ix_->pq.code_size * 8) {
+                ix_->search_type = IndexPQ::ST_PQ;
             } else {
-                ix->search_type = IndexPQ::ST_polysemous;
-                ix->polysemous_ht = int(val);
+                ix_->search_type = IndexPQ::ST_polysemous;
+                ix_->polysemous_ht = int(val);
             }
             return;
-        } else if (DC(IndexIVFPQ)) {
-            if (val >= ix->pq.code_size * 8) {
-                ix->polysemous_ht = 0;
+        }
+        if (DC(IndexIVFPQ)) {
+            if (val >= ix_->pq.code_size * 8) {
+                ix_->polysemous_ht = 0;
             } else {
-                ix->polysemous_ht = int(val);
+                ix_->polysemous_ht = int(val);
             }
             return;
         }
@@ -523,24 +569,31 @@ void ParameterSpace::set_index_parameter(
 
     if (name == "k_factor") {
         if (DC(IndexIVFPQR)) {
-            ix->k_factor = val;
+            ix_->k_factor = val;
             return;
         }
     }
     if (name == "max_codes") {
         if (DC(IndexIVF)) {
-            ix->max_codes = std::isfinite(val) ? size_t(val) : 0;
+            ix_->max_codes = std::isfinite(val) ? size_t(val) : 0;
+            return;
+        }
+    }
+
+    if (name == "prune_headroom") {
+        if (DC(IndexHNSW)) {
+            ix_->hnsw.prune_headroom = val;
             return;
         }
     }
 
     if (name == "efConstruction") {
         if (DC(IndexHNSW)) {
-            ix->hnsw.efConstruction = int(val);
+            ix_->hnsw.efConstruction = int(val);
             return;
         }
         if (DC(IndexIVF)) {
-            if (IndexHNSW* cq = dynamic_cast<IndexHNSW*>(ix->quantizer)) {
+            if (IndexHNSW* cq = dynamic_cast<IndexHNSW*>(ix_->quantizer)) {
                 cq->hnsw.efConstruction = int(val);
                 return;
             }
@@ -549,11 +602,11 @@ void ParameterSpace::set_index_parameter(
 
     if (name == "efSearch") {
         if (DC(IndexHNSW)) {
-            ix->hnsw.efSearch = int(val);
+            ix_->hnsw.efSearch = int(val);
             return;
         }
         if (DC(IndexIVF)) {
-            if (IndexHNSW* cq = dynamic_cast<IndexHNSW*>(ix->quantizer)) {
+            if (IndexHNSW* cq = dynamic_cast<IndexHNSW*>(ix_->quantizer)) {
                 cq->hnsw.efSearch = int(val);
                 return;
             }
@@ -563,7 +616,7 @@ void ParameterSpace::set_index_parameter(
     if (name.find("quantizer_") == 0) {
         if (DC(IndexIVF)) {
             std::string sub_name = name.substr(strlen("quantizer_"));
-            set_index_parameter(ix->quantizer, sub_name, val);
+            set_index_parameter(ix_->quantizer, sub_name, val);
             return;
         }
     }
@@ -574,15 +627,95 @@ void ParameterSpace::set_index_parameter(
             name.c_str());
 }
 
+void ParameterSpace::set_index_parameter(
+        IndexBinary* index,
+        const std::string& name,
+        double val) const {
+    if (verbose > 1) {
+        printf("    set_index_parameter (binary) %s=%g\n", name.c_str(), val);
+    }
+
+    if (name == "verbose") {
+        index->verbose = int(val);
+        // and fall through to also enable it on sub-indexes
+    }
+
+    if (DC(IndexBinaryIDMap)) {
+        set_index_parameter(ix_->index, name, val);
+        return;
+    }
+
+    if (name == "verbose") {
+        return; // last verbose that we could find
+    }
+
+    if (name == "nprobe") {
+        if (DC(IndexBinaryIVF)) {
+            ix_->nprobe = int(val);
+            return;
+        }
+    }
+
+    if (name == "max_codes") {
+        if (DC(IndexBinaryIVF)) {
+            ix_->max_codes = std::isfinite(val) ? size_t(val) : 0;
+            return;
+        }
+    }
+
+    if (name == "efConstruction") {
+        if (DC(IndexBinaryHNSW)) {
+            ix_->hnsw.efConstruction = int(val);
+            return;
+        }
+        if (DC(IndexBinaryIVF)) {
+            if (IndexBinaryHNSW* cq =
+                        dynamic_cast<IndexBinaryHNSW*>(ix_->quantizer)) {
+                cq->hnsw.efConstruction = int(val);
+                return;
+            }
+        }
+    }
+
+    if (name == "efSearch") {
+        if (DC(IndexBinaryHNSW)) {
+            ix_->hnsw.efSearch = int(val);
+            return;
+        }
+        if (DC(IndexBinaryIVF)) {
+            if (IndexBinaryHNSW* cq =
+                        dynamic_cast<IndexBinaryHNSW*>(ix_->quantizer)) {
+                cq->hnsw.efSearch = int(val);
+                return;
+            }
+        }
+    }
+
+    if (name.find("quantizer_") == 0) {
+        if (DC(IndexBinaryIVF)) {
+            std::string sub_name = name.substr(strlen("quantizer_"));
+            set_index_parameter(ix_->quantizer, sub_name, val);
+            return;
+        }
+    }
+
+    FAISS_THROW_FMT(
+            "ParameterSpace::set_index_parameter:"
+            "could not set parameter %s on binary index",
+            name.c_str());
+}
+
+#undef DC
+
 void ParameterSpace::display() const {
     printf("ParameterSpace, %zd parameters, %zd combinations:\n",
            parameter_ranges.size(),
            n_combinations());
-    for (int i = 0; i < parameter_ranges.size(); i++) {
+    for (size_t i = 0; i < parameter_ranges.size(); i++) {
         const ParameterRange& pr = parameter_ranges[i];
         printf("   %s: ", pr.name.c_str());
         char sep = '[';
-        for (int j = 0; j < pr.values.size(); j++) {
+        for (size_t j = 0; j < pr.values.size(); j++) {
             printf("%c %g", sep, pr.values[j]);
             sep = ',';
         }
@@ -596,12 +729,14 @@ void ParameterSpace::update_bounds(
         double* upper_bound_perf,
         double* lower_bound_t) const {
     if (combination_ge(cno, op.cno)) {
-        if (op.t > *lower_bound_t)
+        if (op.t > *lower_bound_t) {
             *lower_bound_t = op.t;
+        }
     }
     if (combination_ge(op.cno, cno)) {
-        if (op.perf < *upper_bound_perf)
+        if (op.perf < *upper_bound_perf) {
             *upper_bound_perf = op.perf;
+        }
     }
 }
 
@@ -612,7 +747,8 @@ void ParameterSpace::explore(
         const AutoTuneCriterion& crit,
         OperatingPoints* ops) const {
     FAISS_THROW_IF_NOT_MSG(
-            nq == crit.nq, "criterion does not have the same nb of queries");
+            nq == static_cast<size_t>(crit.nq),
+            "criterion does not have the same nb of queries");
 
     size_t n_comb = n_combinations();
 
@@ -630,7 +766,7 @@ void ParameterSpace::explore(
 
             bool keep = ops->add(perf, t_search, combination_name(cno), cno);
 
-            if (verbose)
+            if (verbose) {
                 printf("  %zd/%zd: %s perf=%.3f t=%.3f s %s\n",
                        cno,
                        n_comb,
@@ -638,39 +774,43 @@ void ParameterSpace::explore(
                        perf,
                        t_search,
                        keep ? "*" : "");
+            }
         }
         return;
     }
 
-    int n_exp = n_experiments;
+    size_t n_exp = static_cast<size_t>(n_experiments);
 
-    if (n_exp > n_comb)
+    if (n_exp > n_comb) {
         n_exp = n_comb;
+    }
     FAISS_THROW_IF_NOT(n_comb == 1 || n_exp > 2);
     std::vector<int> perm(n_comb);
     // make sure the slowest and fastest experiment are run
     perm[0] = 0;
     if (n_comb > 1) {
-        perm[1] = n_comb - 1;
+        perm[1] = static_cast<int>(n_comb - 1);
         rand_perm(&perm[2], n_comb - 2, 1234);
-        for (int i = 2; i < perm.size(); i++)
+        for (size_t i = 2; i < perm.size(); i++) {
             perm[i]++;
+        }
     }
 
     for (size_t xp = 0; xp < n_exp; xp++) {
         size_t cno = perm[xp];
 
-        if (verbose)
-            printf("  %zd/%d: cno=%zd %s ",
+        if (verbose) {
+            printf("  %zd/%zd: cno=%zd %s ",
                    xp,
                    n_exp,
                    cno,
                    combination_name(cno).c_str());
+        }
 
         {
             double lower_bound_t = 0.0;
             double upper_bound_perf = 1.0;
-            for (int i = 0; i < ops->all_pts.size(); i++) {
+            for (size_t i = 0; i < ops->all_pts.size(); i++) {
                 update_bounds(
                         cno,
                         ops->all_pts[i],
@@ -678,13 +818,15 @@ void ParameterSpace::explore(
                         &lower_bound_t);
             }
             double best_t = ops->t_for_perf(upper_bound_perf);
-            if (verbose)
+            if (verbose) {
                 printf("bounds [perf<=%.3f t>=%.3f] %s",
                        upper_bound_perf,
                        lower_bound_t,
                        best_t <= lower_bound_t ? "skip\n" : "");
-            if (best_t <= lower_bound_t)
+            }
+            if (best_t <= lower_bound_t) {
                 continue;
+            }
         }
 
         set_index_parameters(index, cno);
@@ -699,10 +841,12 @@ void ParameterSpace::explore(
         do {
             if (thread_over_batches) {
 #pragma omp parallel for
-                for (idx_t q0 = 0; q0 < nq; q0 += batchsize) {
+                for (int64_t q0 = 0; q0 < static_cast<int64_t>(nq);
+                     q0 += batchsize) {
                     size_t q1 = q0 + batchsize;
-                    if (q1 > nq)
+                    if (q1 > nq) {
                         q1 = nq;
+                    }
                     index->search(
                             q1 - q0,
                             xq + q0 * index->d,
@@ -713,8 +857,9 @@ void ParameterSpace::explore(
             } else {
                 for (size_t q0 = 0; q0 < nq; q0 += batchsize) {
                     size_t q1 = q0 + batchsize;
-                    if (q1 > nq)
+                    if (q1 > nq) {
                         q1 = nq;
+                    }
                     index->search(
                             q1 - q0,
                             xq + q0 * index->d,
@@ -734,13 +879,14 @@ void ParameterSpace::explore(
 
         bool keep = ops->add(perf, t_search, combination_name(cno), cno);
 
-        if (verbose)
+        if (verbose) {
             printf(" perf %.3f t %.3f (%d %s) %s\n",
                    perf,
                    t_search,
                    nrun,
                    nrun >= 2 ? "runs" : "run",
                    keep ? "*" : "");
+        }
     }
 }
 

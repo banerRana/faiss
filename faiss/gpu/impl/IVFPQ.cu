@@ -1,5 +1,5 @@
-/**
- * Copyright (c) Facebook, Inc. and its affiliates.
+/*
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * This source code is licensed under the MIT license found in the
  * LICENSE file in the root directory of this source tree.
@@ -261,14 +261,16 @@ size_t IVFPQ::getGpuVectorsEncodingSize_(idx_t numVecs) const {
         // bits per PQ code
         idx_t bits = bitsPerSubQuantizer_;
 
-        // bytes to encode a block of 32 vectors (single PQ code)
-        idx_t bytesPerDimBlock = bits * 32 / 8;
+        int warpSize = getWarpSizeCurrentDevice();
 
-        // bytes to fully encode 32 vectors
+        // bytes to encode a block of warpSize vectors (single PQ code)
+        idx_t bytesPerDimBlock = bits * warpSize / 8;
+
+        // bytes to fully encode warpSize vectors
         idx_t bytesPerBlock = bytesPerDimBlock * numSubQuantizers_;
 
-        // number of blocks of 32 vectors we have
-        idx_t numBlocks = utils::divUp(numVecs, idx_t(32));
+        // number of blocks of warpSize vectors we have
+        idx_t numBlocks = utils::divUp(numVecs, idx_t(warpSize));
 
         // total size to encode numVecs
         return bytesPerBlock * numBlocks;
@@ -298,7 +300,7 @@ std::vector<uint8_t> IVFPQ::translateCodesToGpu_(
             std::move(up), numVecs, numSubQuantizers_, bitsPerSubQuantizer_);
 }
 
-// Conver the GPU layout to the CPU layout
+// Convert the GPU layout to the CPU layout
 std::vector<uint8_t> IVFPQ::translateCodesFromGpu_(
         std::vector<uint8_t> codes,
         idx_t numVecs) const {
@@ -492,7 +494,8 @@ void IVFPQ::search(
         int nprobe,
         int k,
         Tensor<float, 2, true>& outDistances,
-        Tensor<idx_t, 2, true>& outIndices) {
+        Tensor<idx_t, 2, true>& outIndices,
+        const IDSelector* sel) {
     // These are caught at a higher level
     FAISS_ASSERT(nprobe <= GPU_MAX_SELECTION_K);
     FAISS_ASSERT(k <= GPU_MAX_SELECTION_K);

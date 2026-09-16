@@ -1,5 +1,5 @@
-/**
- * Copyright (c) Facebook, Inc. and its affiliates.
+/*
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * This source code is licensed under the MIT license found in the
  * LICENSE file in the root directory of this source tree.
@@ -9,12 +9,15 @@
 
 #pragma once
 
+#include <optional>
 #include <vector>
 
+#include <faiss/Index.h>
 #include <faiss/IndexFlat.h>
 #include <faiss/IndexPQ.h>
 #include <faiss/IndexScalarQuantizer.h>
 #include <faiss/impl/HNSW.h>
+#include <faiss/impl/Panorama.h>
 #include <faiss/utils/utils.h>
 
 namespace faiss {
@@ -25,9 +28,9 @@ struct IndexHNSW;
  * link structure built on top */
 
 struct IndexHNSW : Index {
-    typedef HNSW::storage_idx_t storage_idx_t;
+    using storage_idx_t = HNSW::storage_idx_t;
 
-    // the link strcuture
+    // the link structure
     HNSW hnsw;
 
     // the sequential storage
@@ -42,15 +45,19 @@ struct IndexHNSW : Index {
 
     // When set to true, all neighbors in level 0 are filled up
     // to the maximum size allowed (2 * M). This option is used by
-    // IndexHHNSWCagra to create a full base layer graph that is
+    // IndexHNSWCagra to create a full base layer graph that is
     // used when GpuIndexCagra::copyFrom(IndexHNSWCagra*) is invoked.
     bool keep_max_size_level0 = false;
+
+    // See impl/VisitedTable.h.
+    std::optional<bool> use_visited_hashset;
 
     explicit IndexHNSW(int d = 0, int M = 32, MetricType metric = METRIC_L2);
     explicit IndexHNSW(Index* storage, int M = 32);
 
     ~IndexHNSW() override;
 
+    /// Adds vectors to the index. May not be called concurrently.
     void add(idx_t n, const float* x) override;
 
     /// Trains the storage if needed
@@ -71,6 +78,12 @@ struct IndexHNSW : Index {
             float radius,
             RangeSearchResult* result,
             const SearchParameters* params = nullptr) const override;
+
+    /** search one vector with a custom result handler */
+    void search1(
+            const float* x,
+            ResultHandler& handler,
+            SearchParameters* params = nullptr) const override;
 
     void reconstruct(idx_t key, float* recons) const override;
 
@@ -110,7 +123,9 @@ struct IndexHNSW : Index {
 
     void link_singletons();
 
-    void permute_entries(const idx_t* perm);
+    virtual void permute_entries(const idx_t* perm);
+
+    DistanceComputer* get_distance_computer() const override;
 };
 
 /** Flat index topped with with a HNSW structure to access elements
@@ -122,16 +137,68 @@ struct IndexHNSWFlat : IndexHNSW {
     IndexHNSWFlat(int d, int M, MetricType metric = METRIC_L2);
 };
 
+/** Panorama implementation of IndexHNSWFlat following
+ * https://www.arxiv.org/pdf/2510.00566.
+ *
+ * Unlike cluster-based Panorama, the vectors have to be higher dimensional
+ * (i.e. typically d > 512) and/or be able to compress a lot of their energy in
+ * the early dimensions to be effective. This is because HNSW accesses vectors
+ * in a random order, which makes cache misses dominate the distance computation
+ * time.
+ *
+ * The `num_panorama_levels` parameter controls the granularity of progressive
+ * distance refinement, allowing candidates to be eliminated early using partial
+ * distance computations rather than computing full distances.
+ *
+ * NOTE: This version of HNSW handles search slightly differently than the
+ * vanilla HNSW, as it uses partial distance computations with progressive
+ * refinement bounds. Instead of computing full distances immediately for all
+ * candidates, Panorama maintains lower and upper bounds that are incrementally
+ * tightened across refinement levels. Candidates are inserted into the search
+ * beam using approximate distance estimates (LB+UB)/2 and are only fully
+ * evaluated when they survive pruning and enter the result heap. This allows
+ * the algorithm to prune unpromising candidates early using Cauchy-Schwarz
+ * bounds on partial inner products. Hence, recall is not guaranteed to be the
+ * same as vanilla HNSW due to the heterogeneous precision within the search
+ * beam (exact vs. partial distance estimates affecting traversal order).
+ */
+struct IndexHNSWFlatPanorama : IndexHNSWFlat {
+    IndexHNSWFlatPanorama();
+    IndexHNSWFlatPanorama(
+            int d,
+            int M,
+            int num_panorama_levels,
+            MetricType metric = METRIC_L2);
+
+    void add(idx_t n, const float* x) override;
+    void reset() override;
+    void permute_entries(const idx_t* perm) override;
+
+    /// Inline for performance - called frequently in search hot path.
+    const float* get_cum_sum(idx_t i) const {
+        return cum_sums.data() + i * (pano.n_levels + 1);
+    }
+
+    std::vector<float> cum_sums;
+    Panorama pano;
+    const size_t num_panorama_levels;
+};
+
 /** PQ index topped with with a HNSW structure to access elements
  *  more efficiently.
  */
 struct IndexHNSWPQ : IndexHNSW {
     IndexHNSWPQ();
-    IndexHNSWPQ(int d, int pq_m, int M, int pq_nbits = 8);
+    IndexHNSWPQ(
+            int d,
+            int pq_m,
+            int M,
+            int pq_nbits = 8,
+            MetricType metric = METRIC_L2);
     void train(idx_t n, const float* x) override;
 };
 
-/** SQ index topped with with a HNSW structure to access elements
+/** SQ index topped with a HNSW structure to access elements
  *  more efficiently.
  */
 struct IndexHNSWSQ : IndexHNSW {
@@ -141,6 +208,36 @@ struct IndexHNSWSQ : IndexHNSW {
             ScalarQuantizer::QuantizerType qtype,
             int M,
             MetricType metric = METRIC_L2);
+};
+
+/** HNSW index whose storage is RaBitQ-compressed.
+ *
+ * The graph is built directly from the compressed codes. Neighbor-diversity
+ * pruning uses a fast 1-bit symmetric L2 estimator, including when the storage
+ * contains multi-bit codes.
+ *
+ * With nb_bits >= 2 the codes carry a per-vector error factor, so search uses
+ * the staged search method: a 1-bit estimate for every neighbor and the full
+ * multi-bit distance only for candidates the error bound cannot rule out.
+ * nb_bits = 1 has no error factor and uses ordinary HNSW search.
+ */
+struct IndexHNSWRaBitQ : IndexHNSW {
+    IndexHNSWRaBitQ();
+    IndexHNSWRaBitQ(
+            int d,
+            int M,
+            uint8_t nb_bits = 1,
+            MetricType metric = METRIC_L2);
+
+    IndexHNSWRaBitQ& operator=(const IndexHNSWRaBitQ&) = delete;
+
+   private:
+    // clone_index() replaces the shallow-copied storage with a deep copy
+    // before returning it. Keep ordinary C++ copies from sharing ownership.
+    IndexHNSWRaBitQ(const IndexHNSWRaBitQ&) = default;
+#ifndef SWIG
+    friend IndexHNSW* clone_IndexHNSW(const IndexHNSW* index);
+#endif
 };
 
 /** 2-level code structure with fast random access
@@ -163,7 +260,11 @@ struct IndexHNSW2Level : IndexHNSW {
 
 struct IndexHNSWCagra : IndexHNSW {
     IndexHNSWCagra();
-    IndexHNSWCagra(int d, int M, MetricType metric = METRIC_L2);
+    IndexHNSWCagra(
+            int d,
+            int M,
+            MetricType metric = METRIC_L2,
+            NumericType numeric_type = NumericType::Float32);
 
     /// When set to true, the index is immutable.
     /// This option is used to copy the knn graph from GpuIndexCagra
@@ -176,7 +277,7 @@ struct IndexHNSWCagra : IndexHNSW {
     /// searches only the base level knn graph of the HNSW index.
     /// This parameter selects the entry point by randomly selecting
     /// some points and using the best one.
-    int num_base_level_search_entrypoints = 32;
+    int num_base_level_search_entrypoints = 256;
 
     void add(idx_t n, const float* x) override;
 
@@ -188,6 +289,17 @@ struct IndexHNSWCagra : IndexHNSW {
             float* distances,
             idx_t* labels,
             const SearchParameters* params = nullptr) const override;
+
+    void range_search(
+            idx_t n,
+            const float* x,
+            float radius,
+            RangeSearchResult* result,
+            const SearchParameters* params = nullptr) const override;
+
+    faiss::NumericType get_numeric_type() const;
+    void set_numeric_type(faiss::NumericType numeric_type);
+    NumericType numeric_type_ = Float32;
 };
 
 } // namespace faiss

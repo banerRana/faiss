@@ -1,4 +1,4 @@
-# Copyright (c) Facebook, Inc. and its affiliates.
+# Copyright (c) Meta Platforms, Inc. and affiliates.
 #
 # This source code is licensed under the MIT license found in the
 # LICENSE file in the root directory of this source tree.
@@ -28,55 +28,86 @@ import inspect
 import sys
 import numpy as np
 
+##################################################################
+# Equivalent of swig_ptr for Torch tensors
+##################################################################
+
+
 def swig_ptr_from_UInt8Tensor(x):
-    """ gets a Faiss SWIG pointer from a pytorch tensor (on CPU or GPU) """
+    """gets a Faiss SWIG pointer from a pytorch tensor (on CPU or GPU)"""
     assert x.is_contiguous()
     assert x.dtype == torch.uint8
     return faiss.cast_integer_to_uint8_ptr(
-        x.untyped_storage().data_ptr() + x.storage_offset())
+        x.untyped_storage().data_ptr() + x.storage_offset()
+    )
+
 
 def swig_ptr_from_HalfTensor(x):
-    """ gets a Faiss SWIG pointer from a pytorch tensor (on CPU or GPU) """
+    """gets a Faiss SWIG pointer from a pytorch tensor (on CPU or GPU)"""
     assert x.is_contiguous()
     assert x.dtype == torch.float16
     # no canonical half type in C/C++
     return faiss.cast_integer_to_void_ptr(
-        x.untyped_storage().data_ptr() + x.storage_offset() * 2)
+        x.untyped_storage().data_ptr() + x.storage_offset() * 2
+    )
+
 
 def swig_ptr_from_FloatTensor(x):
-    """ gets a Faiss SWIG pointer from a pytorch tensor (on CPU or GPU) """
+    """gets a Faiss SWIG pointer from a pytorch tensor (on CPU or GPU)"""
     assert x.is_contiguous()
     assert x.dtype == torch.float32
     return faiss.cast_integer_to_float_ptr(
-        x.untyped_storage().data_ptr() + x.storage_offset() * 4)
+        x.untyped_storage().data_ptr() + x.storage_offset() * 4
+    )
+
+
+def swig_ptr_from_BFloat16Tensor(x):
+    """gets a Faiss SWIG pointer from a pytorch tensor (on CPU or GPU)"""
+    assert x.is_contiguous()
+    assert x.dtype == torch.bfloat16
+    return faiss.cast_integer_to_void_ptr(
+        x.untyped_storage().data_ptr() + x.storage_offset() * 2
+    )
+
 
 def swig_ptr_from_IntTensor(x):
-    """ gets a Faiss SWIG pointer from a pytorch tensor (on CPU or GPU) """
+    """gets a Faiss SWIG pointer from a pytorch tensor (on CPU or GPU)"""
     assert x.is_contiguous()
-    assert x.dtype == torch.int32, 'dtype=%s' % x.dtype
+    assert x.dtype == torch.int32, "dtype=%s" % x.dtype
     return faiss.cast_integer_to_int_ptr(
-        x.untyped_storage().data_ptr() + x.storage_offset() * 4)
+        x.untyped_storage().data_ptr() + x.storage_offset() * 4
+    )
+
 
 def swig_ptr_from_IndicesTensor(x):
-    """ gets a Faiss SWIG pointer from a pytorch tensor (on CPU or GPU) """
+    """gets a Faiss SWIG pointer from a pytorch tensor (on CPU or GPU)"""
     assert x.is_contiguous()
-    assert x.dtype == torch.int64, 'dtype=%s' % x.dtype
+    assert x.dtype == torch.int64, "dtype=%s" % x.dtype
     return faiss.cast_integer_to_idx_t_ptr(
-        x.untyped_storage().data_ptr() + x.storage_offset() * 8)
+        x.untyped_storage().data_ptr() + x.storage_offset() * 8
+    )
+
+
+##################################################################
+# utilities
+##################################################################
+
 
 @contextlib.contextmanager
 def using_stream(res, pytorch_stream=None):
-    """ Creates a scoping object to make Faiss GPU use the same stream
-        as pytorch, based on torch.cuda.current_stream().
-        Or, a specific pytorch stream can be passed in as a second
-        argument, in which case we will use that stream.
+    """Creates a scoping object to make Faiss GPU use the same stream
+    as pytorch, based on torch.cuda.current_stream().
+    Or, a specific pytorch stream can be passed in as a second
+    argument, in which case we will use that stream.
     """
 
     if pytorch_stream is None:
         pytorch_stream = torch.cuda.current_stream()
 
     # This is the cudaStream_t that we wish to use
-    cuda_stream_s = faiss.cast_integer_to_cudastream_t(pytorch_stream.cuda_stream)
+    cuda_stream_s = faiss.cast_integer_to_cudastream_t(
+        pytorch_stream.cuda_stream
+    )
 
     # So we can revert GpuResources stream state upon exit
     prior_dev = torch.cuda.current_device()
@@ -90,25 +121,33 @@ def using_stream(res, pytorch_stream=None):
     finally:
         res.setDefaultStream(prior_dev, prior_stream)
 
-def torch_replace_method(the_class, name, replacement,
-                         ignore_missing=False, ignore_no_base=False):
+
+def torch_replace_method(
+    the_class, name, replacement, ignore_missing=False, ignore_no_base=False
+):
     try:
         orig_method = getattr(the_class, name)
     except AttributeError:
         if ignore_missing:
             return
         raise
-    if orig_method.__name__ == 'torch_replacement_' + name:
+    if orig_method.__name__ == "torch_replacement_" + name:
         # replacement was done in parent class
         return
 
     # We should already have the numpy replacement methods patched
-    assert ignore_no_base or (orig_method.__name__ == 'replacement_' + name)
-    setattr(the_class, name + '_numpy', orig_method)
+    assert ignore_no_base or (orig_method.__name__ == "replacement_" + name)
+    setattr(the_class, name + "_numpy", orig_method)
     setattr(the_class, name, replacement)
 
+
+##################################################################
+# Setup wrappers
+##################################################################
+
+
 def handle_torch_Index(the_class):
-    def torch_replacement_add(self, x):
+    def torch_replacement_add(self, x, numeric_type=faiss.Float32):
         if type(x) is np.ndarray:
             # forward to faiss __init__.py base method
             return self.add_numpy(x)
@@ -116,19 +155,30 @@ def handle_torch_Index(the_class):
         assert type(x) is torch.Tensor
         n, d = x.shape
         assert d == self.d
-        x_ptr = swig_ptr_from_FloatTensor(x)
+        if numeric_type == faiss.Float32:
+            x_ptr = swig_ptr_from_FloatTensor(x)
+        elif numeric_type == faiss.Float16:
+            x_ptr = swig_ptr_from_HalfTensor(x)
+        else:
+            raise ValueError(
+                "numeric type must be either faiss.Float32 or faiss.Float16"
+            )
 
         if x.is_cuda:
-            assert hasattr(self, 'getDevice'), 'GPU tensor on CPU index not allowed'
+            assert hasattr(
+                self, "getDevice"
+            ), "GPU tensor on CPU index not allowed"
 
             # On the GPU, use proper stream ordering
             with using_stream(self.getResources()):
-                self.add_c(n, x_ptr)
+                self.add_ex(n, x_ptr, numeric_type)
         else:
             # CPU torch
-            self.add_c(n, x_ptr)
+            self.add_ex(n, x_ptr, numeric_type)
 
-    def torch_replacement_add_with_ids(self, x, ids):
+    def torch_replacement_add_with_ids(
+        self, x, ids, numeric_type=faiss.Float32
+    ):
         if type(x) is np.ndarray:
             # forward to faiss __init__.py base method
             return self.add_with_ids_numpy(x, ids)
@@ -136,21 +186,30 @@ def handle_torch_Index(the_class):
         assert type(x) is torch.Tensor
         n, d = x.shape
         assert d == self.d
-        x_ptr = swig_ptr_from_FloatTensor(x)
+        if numeric_type == faiss.Float32:
+            x_ptr = swig_ptr_from_FloatTensor(x)
+        elif numeric_type == faiss.Float16:
+            x_ptr = swig_ptr_from_HalfTensor(x)
+        else:
+            raise ValueError(
+                "numeric type must be either faiss.Float32 or faiss.Float16"
+            )
 
         assert type(ids) is torch.Tensor
-        assert ids.shape == (n, ), 'not same number of vectors as ids'
+        assert ids.shape == (n,), "not same number of vectors as ids"
         ids_ptr = swig_ptr_from_IndicesTensor(ids)
 
         if x.is_cuda:
-            assert hasattr(self, 'getDevice'), 'GPU tensor on CPU index not allowed'
+            assert hasattr(
+                self, "getDevice"
+            ), "GPU tensor on CPU index not allowed"
 
             # On the GPU, use proper stream ordering
             with using_stream(self.getResources()):
-                self.add_with_ids_c(n, x_ptr, ids_ptr)
+                self.add_with_ids_ex(n, x_ptr, numeric_type, ids_ptr)
         else:
             # CPU torch
-            self.add_with_ids_c(n, x_ptr, ids_ptr)
+            self.add_with_ids_ex(n, x_ptr, numeric_type, ids_ptr)
 
     def torch_replacement_assign(self, x, k, labels=None):
         if type(x) is np.ndarray:
@@ -170,7 +229,9 @@ def handle_torch_Index(the_class):
         L_ptr = swig_ptr_from_IndicesTensor(labels)
 
         if x.is_cuda:
-            assert hasattr(self, 'getDevice'), 'GPU tensor on CPU index not allowed'
+            assert hasattr(
+                self, "getDevice"
+            ), "GPU tensor on CPU index not allowed"
 
             # On the GPU, use proper stream ordering
             with using_stream(self.getResources()):
@@ -181,7 +242,7 @@ def handle_torch_Index(the_class):
 
         return labels
 
-    def torch_replacement_train(self, x):
+    def torch_replacement_train(self, x, numeric_type=faiss.Float32):
         if type(x) is np.ndarray:
             # forward to faiss __init__.py base method
             return self.train_numpy(x)
@@ -189,19 +250,57 @@ def handle_torch_Index(the_class):
         assert type(x) is torch.Tensor
         n, d = x.shape
         assert d == self.d
-        x_ptr = swig_ptr_from_FloatTensor(x)
+        if numeric_type == faiss.Float32:
+            x_ptr = swig_ptr_from_FloatTensor(x)
+        elif numeric_type == faiss.Float16:
+            x_ptr = swig_ptr_from_HalfTensor(x)
+        else:
+            raise ValueError(
+                "numeric type must be either faiss.Float32 or faiss.Float16"
+            )
 
         if x.is_cuda:
-            assert hasattr(self, 'getDevice'), 'GPU tensor on CPU index not allowed'
+            assert hasattr(
+                self, "getDevice"
+            ), "GPU tensor on CPU index not allowed"
 
             # On the GPU, use proper stream ordering
             with using_stream(self.getResources()):
-                self.train_c(n, x_ptr)
+                self.train_ex(n, x_ptr, numeric_type)
         else:
             # CPU torch
-            self.train_c(n, x_ptr)
+            self.train_ex(n, x_ptr, numeric_type)
 
-    def torch_replacement_search(self, x, k, D=None, I=None):
+    def search_methods_common(x, k, D, I, numeric_type=faiss.Float32):
+        n, d = x.shape
+        if numeric_type == faiss.Float32:
+            x_ptr = swig_ptr_from_FloatTensor(x)
+        elif numeric_type == faiss.Float16:
+            x_ptr = swig_ptr_from_HalfTensor(x)
+        else:
+            raise ValueError(
+                "numeric type must be either faiss.Float32 or faiss.Float16"
+            )
+
+        if D is None:
+            D = torch.empty(n, k, device=x.device, dtype=torch.float32)
+        else:
+            assert type(D) is torch.Tensor
+            assert D.shape == (n, k)
+        D_ptr = swig_ptr_from_FloatTensor(D)
+
+        if I is None:
+            I = torch.empty(n, k, device=x.device, dtype=torch.int64)
+        else:
+            assert type(I) is torch.Tensor
+            assert I.shape == (n, k)
+        I_ptr = swig_ptr_from_IndicesTensor(I)
+
+        return x_ptr, D_ptr, I_ptr, D, I
+
+    def torch_replacement_search(
+        self, x, k, D=None, I=None, numeric_type=faiss.Float32
+    ):
         if type(x) is np.ndarray:
             # forward to faiss __init__.py base method
             return self.search_numpy(x, k, D=D, I=I)
@@ -209,35 +308,26 @@ def handle_torch_Index(the_class):
         assert type(x) is torch.Tensor
         n, d = x.shape
         assert d == self.d
-        x_ptr = swig_ptr_from_FloatTensor(x)
 
-        if D is None:
-            D = torch.empty(n, k, device=x.device, dtype=torch.float32)
-        else:
-            assert type(D) is torch.Tensor
-            assert D.shape == (n, k)
-        D_ptr = swig_ptr_from_FloatTensor(D)
-
-        if I is None:
-            I = torch.empty(n, k, device=x.device, dtype=torch.int64)
-        else:
-            assert type(I) is torch.Tensor
-            assert I.shape == (n, k)
-        I_ptr = swig_ptr_from_IndicesTensor(I)
+        x_ptr, D_ptr, I_ptr, D, I = search_methods_common(x, k, D, I)
 
         if x.is_cuda:
-            assert hasattr(self, 'getDevice'), 'GPU tensor on CPU index not allowed'
+            assert hasattr(
+                self, "getDevice"
+            ), "GPU tensor on CPU index not allowed"
 
             # On the GPU, use proper stream ordering
             with using_stream(self.getResources()):
-                self.search_c(n, x_ptr, k, D_ptr, I_ptr)
+                self.search_ex(n, x_ptr, numeric_type, k, D_ptr, I_ptr)
         else:
             # CPU torch
-            self.search_c(n, x_ptr, k, D_ptr, I_ptr)
+            self.search_ex(n, x_ptr, numeric_type, k, D_ptr, I_ptr)
 
         return D, I
 
-    def torch_replacement_search_and_reconstruct(self, x, k, D=None, I=None, R=None):
+    def torch_replacement_search_and_reconstruct(
+        self, x, k, D=None, I=None, R=None
+    ):
         if type(x) is np.ndarray:
             # Forward to faiss __init__.py base method
             return self.search_and_reconstruct_numpy(x, k, D=D, I=I, R=R)
@@ -245,21 +335,8 @@ def handle_torch_Index(the_class):
         assert type(x) is torch.Tensor
         n, d = x.shape
         assert d == self.d
-        x_ptr = swig_ptr_from_FloatTensor(x)
 
-        if D is None:
-            D = torch.empty(n, k, device=x.device, dtype=torch.float32)
-        else:
-            assert type(D) is torch.Tensor
-            assert D.shape == (n, k)
-        D_ptr = swig_ptr_from_FloatTensor(D)
-
-        if I is None:
-            I = torch.empty(n, k, device=x.device, dtype=torch.int64)
-        else:
-            assert type(I) is torch.Tensor
-            assert I.shape == (n, k)
-        I_ptr = swig_ptr_from_IndicesTensor(I)
+        x_ptr, D_ptr, I_ptr, D, I = search_methods_common(x, k, D, I)
 
         if R is None:
             R = torch.empty(n, k, d, device=x.device, dtype=torch.float32)
@@ -269,7 +346,9 @@ def handle_torch_Index(the_class):
         R_ptr = swig_ptr_from_FloatTensor(R)
 
         if x.is_cuda:
-            assert hasattr(self, 'getDevice'), 'GPU tensor on CPU index not allowed'
+            assert hasattr(
+                self, "getDevice"
+            ), "GPU tensor on CPU index not allowed"
 
             # On the GPU, use proper stream ordering
             with using_stream(self.getResources()):
@@ -280,9 +359,53 @@ def handle_torch_Index(the_class):
 
         return D, I, R
 
+    def torch_replacement_search_preassigned(
+        self, x, k, Iq, Dq, *, D=None, I=None
+    ):
+        if type(x) is np.ndarray:
+            # forward to faiss __init__.py base method
+            return self.search_preassigned_numpy(x, k, Iq, Dq, D=D, I=I)
+
+        assert type(x) is torch.Tensor
+        n, d = x.shape
+        assert d == self.d
+
+        x_ptr, D_ptr, I_ptr, D, I = search_methods_common(x, k, D, I)
+
+        assert Iq.shape == (n, self.nprobe)
+        Iq = Iq.contiguous()
+        Iq_ptr = swig_ptr_from_IndicesTensor(Iq)
+
+        if Dq is not None:
+            Dq = Dq.contiguous()
+            assert Dq.shape == Iq.shape
+            Dq_ptr = swig_ptr_from_FloatTensor(Dq)
+        else:
+            Dq_ptr = None
+
+        if x.is_cuda:
+            assert hasattr(
+                self, "getDevice"
+            ), "GPU tensor on CPU index not allowed"
+
+            # On the GPU, use proper stream ordering
+            with using_stream(self.getResources()):
+                self.search_preassigned_c(
+                    n, x_ptr, k, Iq_ptr, Dq_ptr, D_ptr, I_ptr, False
+                )
+        else:
+            # CPU torch
+            self.search_preassigned_c(
+                n, x_ptr, k, Iq_ptr, Dq_ptr, D_ptr, I_ptr, False
+            )
+
+        return D, I
+
     def torch_replacement_remove_ids(self, x):
         # Not yet implemented
-        assert type(x) is not torch.Tensor, 'remove_ids not yet implemented for torch'
+        assert (
+            type(x) is not torch.Tensor
+        ), "remove_ids not yet implemented for torch"
         return self.remove_ids_numpy(x)
 
     def torch_replacement_reconstruct(self, key, x=None):
@@ -295,20 +418,22 @@ def handle_torch_Index(the_class):
 
         # If the index is a CPU index, the default device is CPU, otherwise we
         # produce a GPU tensor
-        device = torch.device('cpu')
-        if hasattr(self, 'getDevice'):
+        device = torch.device("cpu")
+        if hasattr(self, "getDevice"):
             # same device as the index
-            device = torch.device('cuda', self.getDevice())
+            device = torch.device("cuda", self.getDevice())
 
         if x is None:
             x = torch.empty(self.d, device=device, dtype=torch.float32)
         else:
             assert type(x) is torch.Tensor
-            assert x.shape == (self.d, )
+            assert x.shape == (self.d,)
         x_ptr = swig_ptr_from_FloatTensor(x)
 
         if x.is_cuda:
-            assert hasattr(self, 'getDevice'), 'GPU tensor on CPU index not allowed'
+            assert hasattr(
+                self, "getDevice"
+            ), "GPU tensor on CPU index not allowed"
 
             # On the GPU, use proper stream ordering
             with using_stream(self.getResources()):
@@ -332,10 +457,10 @@ def handle_torch_Index(the_class):
 
         # If the index is a CPU index, the default device is CPU, otherwise we
         # produce a GPU tensor
-        device = torch.device('cpu')
-        if hasattr(self, 'getDevice'):
+        device = torch.device("cpu")
+        if hasattr(self, "getDevice"):
             # same device as the index
-            device = torch.device('cuda', self.getDevice())
+            device = torch.device("cuda", self.getDevice())
 
         if x is None:
             x = torch.empty(ni, self.d, device=device, dtype=torch.float32)
@@ -345,7 +470,9 @@ def handle_torch_Index(the_class):
         x_ptr = swig_ptr_from_FloatTensor(x)
 
         if x.is_cuda:
-            assert hasattr(self, 'getDevice'), 'GPU tensor on CPU index not allowed'
+            assert hasattr(
+                self, "getDevice"
+            ), "GPU tensor on CPU index not allowed"
 
             # On the GPU, use proper stream ordering
             with using_stream(self.getResources()):
@@ -362,7 +489,7 @@ def handle_torch_Index(the_class):
             return self.update_vectors_numpy(keys, x)
 
         assert type(keys) is torch.Tensor
-        (n, ) = keys.shape
+        (n,) = keys.shape
         keys_ptr = swig_ptr_from_IndicesTensor(keys)
 
         assert type(x) is torch.Tensor
@@ -370,7 +497,9 @@ def handle_torch_Index(the_class):
         x_ptr = swig_ptr_from_FloatTensor(x)
 
         if x.is_cuda:
-            assert hasattr(self, 'getDevice'), 'GPU tensor on CPU index not allowed'
+            assert hasattr(
+                self, "getDevice"
+            ), "GPU tensor on CPU index not allowed"
 
             # On the GPU, use proper stream ordering
             with using_stream(self.getResources()):
@@ -391,8 +520,12 @@ def handle_torch_Index(the_class):
         assert d == self.d
         x_ptr = swig_ptr_from_FloatTensor(x)
 
-        assert not x.is_cuda, 'Range search using GPU tensor not yet implemented'
-        assert not hasattr(self, 'getDevice'), 'Range search on GPU index not yet implemented'
+        assert (
+            not x.is_cuda
+        ), "Range search using GPU tensor not yet implemented"
+        assert not hasattr(
+            self, "getDevice"
+        ), "Range search on GPU index not yet implemented"
 
         res = faiss.RangeSearchResult(n)
         self.range_search_c(n, x_ptr, thresh, res)
@@ -401,7 +534,9 @@ def handle_torch_Index(the_class):
         # FIXME: no rev_swig_ptr equivalent for torch.Tensor, just convert
         # np to torch
         # NOTE: torch does not support np.uint64, just np.int64
-        lims = torch.from_numpy(faiss.rev_swig_ptr(res.lims, n + 1).copy().astype('int64'))
+        lims = torch.from_numpy(
+            faiss.rev_swig_ptr(res.lims, n + 1).copy().astype("int64")
+        )
         nd = int(lims[-1])
         D = torch.from_numpy(faiss.rev_swig_ptr(res.distances, nd).copy())
         I = torch.from_numpy(faiss.rev_swig_ptr(res.labels, nd).copy())
@@ -425,7 +560,9 @@ def handle_torch_Index(the_class):
         codes_ptr = swig_ptr_from_UInt8Tensor(codes)
 
         if x.is_cuda:
-            assert hasattr(self, 'getDevice'), 'GPU tensor on CPU index not allowed'
+            assert hasattr(
+                self, "getDevice"
+            ), "GPU tensor on CPU index not allowed"
 
             # On the GPU, use proper stream ordering
             with using_stream(self.getResources()):
@@ -454,7 +591,9 @@ def handle_torch_Index(the_class):
         x_ptr = swig_ptr_from_FloatTensor(x)
 
         if codes.is_cuda:
-            assert hasattr(self, 'getDevice'), 'GPU tensor on CPU index not allowed'
+            assert hasattr(
+                self, "getDevice"
+            ), "GPU tensor on CPU index not allowed"
 
             # On the GPU, use proper stream ordering
             with using_stream(self.getResources()):
@@ -465,24 +604,46 @@ def handle_torch_Index(the_class):
 
         return x
 
+    torch_replace_method(the_class, "add", torch_replacement_add)
+    torch_replace_method(
+        the_class, "add_with_ids", torch_replacement_add_with_ids
+    )
+    torch_replace_method(the_class, "assign", torch_replacement_assign)
+    torch_replace_method(the_class, "train", torch_replacement_train)
+    torch_replace_method(the_class, "search", torch_replacement_search)
+    torch_replace_method(the_class, "remove_ids", torch_replacement_remove_ids)
+    torch_replace_method(
+        the_class, "reconstruct", torch_replacement_reconstruct
+    )
+    torch_replace_method(
+        the_class, "reconstruct_n", torch_replacement_reconstruct_n
+    )
+    torch_replace_method(
+        the_class, "range_search", torch_replacement_range_search
+    )
+    torch_replace_method(
+        the_class,
+        "update_vectors",
+        torch_replacement_update_vectors,
+        ignore_missing=True,
+    )
+    torch_replace_method(
+        the_class,
+        "search_and_reconstruct",
+        torch_replacement_search_and_reconstruct,
+        ignore_missing=True,
+    )
+    torch_replace_method(
+        the_class,
+        "search_preassigned",
+        torch_replacement_search_preassigned,
+        ignore_missing=True,
+    )
+    torch_replace_method(the_class, "sa_encode", torch_replacement_sa_encode)
+    torch_replace_method(the_class, "sa_decode", torch_replacement_sa_decode)
 
-    torch_replace_method(the_class, 'add', torch_replacement_add)
-    torch_replace_method(the_class, 'add_with_ids', torch_replacement_add_with_ids)
-    torch_replace_method(the_class, 'assign', torch_replacement_assign)
-    torch_replace_method(the_class, 'train', torch_replacement_train)
-    torch_replace_method(the_class, 'search', torch_replacement_search)
-    torch_replace_method(the_class, 'remove_ids', torch_replacement_remove_ids)
-    torch_replace_method(the_class, 'reconstruct', torch_replacement_reconstruct)
-    torch_replace_method(the_class, 'reconstruct_n', torch_replacement_reconstruct_n)
-    torch_replace_method(the_class, 'range_search', torch_replacement_range_search)
-    torch_replace_method(the_class, 'update_vectors', torch_replacement_update_vectors,
-                         ignore_missing=True)
-    torch_replace_method(the_class, 'search_and_reconstruct',
-                         torch_replacement_search_and_reconstruct, ignore_missing=True)
-    torch_replace_method(the_class, 'sa_encode', torch_replacement_sa_encode)
-    torch_replace_method(the_class, 'sa_decode', torch_replacement_sa_decode)
 
-faiss_module = sys.modules['faiss']
+faiss_module = sys.modules["faiss"]
 
 # Re-patch anything that inherits from faiss.Index to add the torch bindings
 for symbol in dir(faiss_module):
@@ -493,8 +654,57 @@ for symbol in dir(faiss_module):
             handle_torch_Index(the_class)
 
 
+# allows torch tensor usage with knn
+def torch_replacement_knn(xq, xb, k, metric=faiss.METRIC_L2, metric_arg=0):
+    if type(xb) is np.ndarray:
+        # Forward to faiss __init__.py base method
+        return faiss.knn_numpy(xq, xb, k, metric=metric, metric_arg=metric_arg)
+
+    nb, d = xb.size()
+    assert xb.is_contiguous()
+    assert xb.dtype == torch.float32
+    assert not xb.is_cuda, "use knn_gpu for GPU tensors"
+
+    nq, d2 = xq.size()
+    assert d2 == d
+    assert xq.is_contiguous()
+    assert xq.dtype == torch.float32
+    assert not xq.is_cuda, "use knn_gpu for GPU tensors"
+
+    D = torch.empty(nq, k, device=xb.device, dtype=torch.float32)
+    I = torch.empty(nq, k, device=xb.device, dtype=torch.int64)
+    I_ptr = swig_ptr_from_IndicesTensor(I)
+    D_ptr = swig_ptr_from_FloatTensor(D)
+    xb_ptr = swig_ptr_from_FloatTensor(xb)
+    xq_ptr = swig_ptr_from_FloatTensor(xq)
+
+    if metric == faiss.METRIC_L2:
+        faiss.knn_L2sqr(xq_ptr, xb_ptr, d, nq, nb, k, D_ptr, I_ptr)
+    elif metric == faiss.METRIC_INNER_PRODUCT:
+        faiss.knn_inner_product(xq_ptr, xb_ptr, d, nq, nb, k, D_ptr, I_ptr)
+    else:
+        faiss.knn_extra_metrics(
+            xq_ptr, xb_ptr, d, nq, nb, metric, metric_arg, k, D_ptr, I_ptr
+        )
+
+    return D, I
+
+
+torch_replace_method(faiss_module, "knn", torch_replacement_knn, True, True)
+
+
 # allows torch tensor usage with bfKnn
-def torch_replacement_knn_gpu(res, xq, xb, k, D=None, I=None, metric=faiss.METRIC_L2, device=-1, use_raft=False):
+def torch_replacement_knn_gpu(
+    res,
+    xq,
+    xb,
+    k,
+    D=None,
+    I=None,
+    metric=faiss.METRIC_L2,
+    device=-1,
+    use_cuvs=False,
+):
     if type(xb) is np.ndarray:
         # Forward to faiss __init__.py base method
         return faiss.knn_gpu_numpy(res, xq, xb, k, D, I, metric, device)
@@ -506,7 +716,7 @@ def torch_replacement_knn_gpu(res, xq, xb, k, D=None, I=None, metric=faiss.METRI
         xb = xb.t()
         xb_row_major = False
     else:
-        raise TypeError('matrix should be row or column-major')
+        raise TypeError("matrix should be row or column-major")
 
     if xb.dtype == torch.float32:
         xb_type = faiss.DistanceDataType_F32
@@ -514,8 +724,11 @@ def torch_replacement_knn_gpu(res, xq, xb, k, D=None, I=None, metric=faiss.METRI
     elif xb.dtype == torch.float16:
         xb_type = faiss.DistanceDataType_F16
         xb_ptr = swig_ptr_from_HalfTensor(xb)
+    elif xb.dtype == torch.bfloat16:
+        xb_type = faiss.DistanceDataType_BF16
+        xb_ptr = swig_ptr_from_BFloat16Tensor(xb)
     else:
-        raise TypeError('xb must be f32 or f16')
+        raise TypeError("xq must be float32, float16 or bfloat16")
 
     nq, d2 = xq.size()
     assert d2 == d
@@ -525,7 +738,7 @@ def torch_replacement_knn_gpu(res, xq, xb, k, D=None, I=None, metric=faiss.METRI
         xq = xq.t()
         xq_row_major = False
     else:
-        raise TypeError('matrix should be row or column-major')
+        raise TypeError("matrix should be row or column-major")
 
     if xq.dtype == torch.float32:
         xq_type = faiss.DistanceDataType_F32
@@ -533,15 +746,18 @@ def torch_replacement_knn_gpu(res, xq, xb, k, D=None, I=None, metric=faiss.METRI
     elif xq.dtype == torch.float16:
         xq_type = faiss.DistanceDataType_F16
         xq_ptr = swig_ptr_from_HalfTensor(xq)
+    elif xq.dtype == torch.bfloat16:
+        xq_type = faiss.DistanceDataType_BF16
+        xq_ptr = swig_ptr_from_BFloat16Tensor(xq)
     else:
-        raise TypeError('xq must be f32 or f16')
+        raise TypeError("xq must be float32, float16 or bfloat16")
 
     if D is None:
         D = torch.empty(nq, k, device=xb.device, dtype=torch.float32)
     else:
         assert D.shape == (nq, k)
         # interface takes void*, we need to check this
-        assert (D.dtype == torch.float32)
+        assert D.dtype == torch.float32
 
     if I is None:
         I = torch.empty(nq, k, device=xb.device, dtype=torch.int64)
@@ -555,7 +771,7 @@ def torch_replacement_knn_gpu(res, xq, xb, k, D=None, I=None, metric=faiss.METRI
         I_type = faiss.IndicesDataType_I32
         I_ptr = swig_ptr_from_IntTensor(I)
     else:
-        raise TypeError('I must be i64 or i32')
+        raise TypeError("I must be i64 or i32")
 
     D_ptr = swig_ptr_from_FloatTensor(D)
 
@@ -575,17 +791,23 @@ def torch_replacement_knn_gpu(res, xq, xb, k, D=None, I=None, metric=faiss.METRI
     args.outIndices = I_ptr
     args.outIndicesType = I_type
     args.device = device
-    args.use_raft = use_raft
+    args.use_cuvs = use_cuvs
 
     with using_stream(res):
         faiss.bfKnn(res, args)
 
     return D, I
 
-torch_replace_method(faiss_module, 'knn_gpu', torch_replacement_knn_gpu, True, True)
+
+torch_replace_method(
+    faiss_module, "knn_gpu", torch_replacement_knn_gpu, True, True
+)
+
 
 # allows torch tensor usage with bfKnn for all pairwise distances
-def torch_replacement_pairwise_distance_gpu(res, xq, xb, D=None, metric=faiss.METRIC_L2, device=-1):
+def torch_replacement_pairwise_distance_gpu(
+    res, xq, xb, D=None, metric=faiss.METRIC_L2, device=-1
+):
     if type(xb) is np.ndarray:
         # Forward to faiss __init__.py base method
         return faiss.pairwise_distance_gpu_numpy(res, xq, xb, D, metric)
@@ -597,7 +819,7 @@ def torch_replacement_pairwise_distance_gpu(res, xq, xb, D=None, metric=faiss.ME
         xb = xb.t()
         xb_row_major = False
     else:
-        raise TypeError('xb matrix should be row or column-major')
+        raise TypeError("xb matrix should be row or column-major")
 
     if xb.dtype == torch.float32:
         xb_type = faiss.DistanceDataType_F32
@@ -606,7 +828,7 @@ def torch_replacement_pairwise_distance_gpu(res, xq, xb, D=None, metric=faiss.ME
         xb_type = faiss.DistanceDataType_F16
         xb_ptr = swig_ptr_from_HalfTensor(xb)
     else:
-        raise TypeError('xb must be float32 or float16')
+        raise TypeError("xb must be float32 or float16")
 
     nq, d2 = xq.size()
     assert d2 == d
@@ -616,7 +838,7 @@ def torch_replacement_pairwise_distance_gpu(res, xq, xb, D=None, metric=faiss.ME
         xq = xq.t()
         xq_row_major = False
     else:
-        raise TypeError('xq matrix should be row or column-major')
+        raise TypeError("xq matrix should be row or column-major")
 
     if xq.dtype == torch.float32:
         xq_type = faiss.DistanceDataType_F32
@@ -625,20 +847,20 @@ def torch_replacement_pairwise_distance_gpu(res, xq, xb, D=None, metric=faiss.ME
         xq_type = faiss.DistanceDataType_F16
         xq_ptr = swig_ptr_from_HalfTensor(xq)
     else:
-        raise TypeError('xq must be float32 or float16')
+        raise TypeError("xq must be float32 or float16")
 
     if D is None:
         D = torch.empty(nq, nb, device=xb.device, dtype=torch.float32)
     else:
         assert D.shape == (nq, nb)
         # interface takes void*, we need to check this
-        assert (D.dtype == torch.float32)
+        assert D.dtype == torch.float32
 
     D_ptr = swig_ptr_from_FloatTensor(D)
 
     args = faiss.GpuDistanceParams()
     args.metric = metric
-    args.k = -1 # selects all pairwise distance
+    args.k = -1  # selects all pairwise distance
     args.dims = d
     args.vectors = xb_ptr
     args.vectorsRowMajor = xb_row_major
@@ -656,4 +878,11 @@ def torch_replacement_pairwise_distance_gpu(res, xq, xb, D=None, metric=faiss.ME
 
     return D
 
-torch_replace_method(faiss_module, 'pairwise_distance_gpu', torch_replacement_pairwise_distance_gpu, True, True)
+
+torch_replace_method(
+    faiss_module,
+    "pairwise_distance_gpu",
+    torch_replacement_pairwise_distance_gpu,
+    True,
+    True,
+)

@@ -1,5 +1,5 @@
-/**
- * Copyright (c) Facebook, Inc. and its affiliates.
+/*
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * This source code is licensed under the MIT license found in the
  * LICENSE file in the root directory of this source tree.
@@ -20,6 +20,32 @@ namespace gpu {
 template <typename T>
 struct GetCudaType;
 
+#ifdef USE_AMD_ROCM
+
+#if ((hipblasVersionMajor == 2 && defined(HIPBLAS_V2)) || \
+     hipblasVersionMajor >= 3)
+using hipDataTypeCompat = hipDataType;
+#else
+using hipDataTypeCompat = hipblasDatatype_t;
+#endif
+
+template <>
+struct GetCudaType<float> {
+    static constexpr hipDataTypeCompat Type = HIPBLAS_R_32F;
+};
+
+template <>
+struct GetCudaType<half> {
+    static constexpr hipDataTypeCompat Type = HIPBLAS_R_16F;
+};
+
+template <>
+struct GetCudaType<__hip_bfloat16> {
+    static constexpr hipDataTypeCompat Type = HIPBLAS_R_16B;
+};
+
+#else
+
 template <>
 struct GetCudaType<float> {
     static constexpr cudaDataType_t Type = CUDA_R_32F;
@@ -29,6 +55,13 @@ template <>
 struct GetCudaType<half> {
     static constexpr cudaDataType_t Type = CUDA_R_16F;
 };
+
+template <>
+struct GetCudaType<__nv_bfloat16> {
+    static constexpr cudaDataType_t Type = CUDA_R_16BF;
+};
+
+#endif
 
 template <typename AT, typename BT>
 cublasStatus_t rawGemm(
@@ -48,6 +81,36 @@ cublasStatus_t rawGemm(
         int ldc) {
     auto cAT = GetCudaType<AT>::Type;
     auto cBT = GetCudaType<BT>::Type;
+
+#ifdef USE_AMD_ROCM
+#if ((hipblasVersionMajor == 2 && defined(HIPBLAS_V2)) || \
+     hipblasVersionMajor >= 3)
+    auto computeType = HIPBLAS_COMPUTE_32F;
+#else
+    auto computeType = HIPBLAS_R_32F;
+#endif
+
+    return hipblasGemmEx(
+            handle,
+            transa,
+            transb,
+            m,
+            n,
+            k,
+            &fAlpha,
+            A,
+            cAT,
+            lda,
+            B,
+            cBT,
+            ldb,
+            &fBeta,
+            C,
+            HIPBLAS_R_32F,
+            ldc,
+            computeType,
+            HIPBLAS_GEMM_DEFAULT);
+#else
 
     // FIXME: some weird CUDA 11 bug? where cublasSgemmEx on
     // f16 (8, 64) x f16 (64, 64)' = f32 (8, 64) returns "not supported".
@@ -100,6 +163,7 @@ cublasStatus_t rawGemm(
             C,
             CUDA_R_32F,
             ldc);
+#endif // USE_AMD_ROCM
 }
 
 template <typename AT, typename BT>
@@ -126,6 +190,39 @@ cublasStatus_t rawBatchGemm(
     auto cBT = GetCudaType<BT>::Type;
 
     // Always accumulate in f32
+#ifdef USE_AMD_ROCM
+#if ((hipblasVersionMajor == 2 && defined(HIPBLAS_V2)) || \
+     hipblasVersionMajor >= 3)
+    auto computeType = HIPBLAS_COMPUTE_32F;
+#else
+    auto computeType = HIPBLAS_R_32F;
+#endif
+
+    return hipblasGemmStridedBatchedEx(
+            handle,
+            transa,
+            transb,
+            m,
+            n,
+            k,
+            &fAlpha,
+            A,
+            cAT,
+            lda,
+            strideA,
+            B,
+            cBT,
+            ldb,
+            strideB,
+            &fBeta,
+            C,
+            HIPBLAS_R_32F,
+            ldc,
+            strideC,
+            batchCount,
+            computeType,
+            HIPBLAS_GEMM_DEFAULT);
+#else
     return cublasGemmStridedBatchedEx(
             handle,
             transa,
@@ -150,6 +247,7 @@ cublasStatus_t rawBatchGemm(
             batchCount,
             CUDA_R_32F,
             CUBLAS_GEMM_DEFAULT);
+#endif
 }
 
 template <typename AT, typename BT>

@@ -1,5 +1,5 @@
-/**
- * Copyright (c) Facebook, Inc. and its affiliates.
+/*
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * This source code is licensed under the MIT license found in the
  * LICENSE file in the root directory of this source tree.
@@ -26,7 +26,8 @@ struct IndexIVFFlat : IndexIVF {
             Index* quantizer,
             size_t d,
             size_t nlist_,
-            MetricType = METRIC_L2);
+            MetricType = METRIC_L2,
+            bool own_invlists = true);
 
     void add_core(
             idx_t n,
@@ -42,9 +43,16 @@ struct IndexIVFFlat : IndexIVF {
             uint8_t* codes,
             bool include_listnos = false) const override;
 
+    void decode_vectors(
+            idx_t n,
+            const uint8_t* codes,
+            const idx_t* list_nos,
+            float* x) const override;
+
     InvertedListScanner* get_InvertedListScanner(
             bool store_pairs,
-            const IDSelector* sel) const override;
+            const IDSelector* sel,
+            const IVFSearchParameters* params) const override;
 
     void reconstruct_from_offset(int64_t list_no, int64_t offset, float* recons)
             const override;
@@ -52,6 +60,38 @@ struct IndexIVFFlat : IndexIVF {
     void sa_decode(idx_t n, const uint8_t* bytes, float* x) const override;
 
     IndexIVFFlat();
+};
+
+template <typename VectorDistance>
+struct IVFFlatScanner : InvertedListScanner {
+    VectorDistance vd;
+    using C = typename VectorDistance::C;
+
+    IVFFlatScanner(
+            const VectorDistance& vd,
+            bool store_pairs,
+            const IDSelector* sel)
+            : InvertedListScanner(store_pairs, sel), vd(vd) {
+        keep_max = vd.is_similarity;
+        code_size = vd.d * sizeof(float);
+    }
+
+    const float* xi = nullptr;
+    void set_query(const float* query) override {
+        this->xi = query;
+    }
+
+    void set_list(idx_t list_no, float /* coarse_dis */) override {
+        this->list_no = list_no;
+    }
+
+    float distance_to_code(const uint8_t* code) const final;
+
+    size_t scan_codes(
+            size_t list_size,
+            const uint8_t* codes,
+            const idx_t* ids,
+            ResultHandler& handler) const override;
 };
 
 struct IndexIVFFlatDedup : IndexIVFFlat {
@@ -64,7 +104,8 @@ struct IndexIVFFlatDedup : IndexIVFFlat {
             Index* quantizer,
             size_t d,
             size_t nlist_,
-            MetricType = METRIC_L2);
+            MetricType = METRIC_L2,
+            bool own_invlists = true);
 
     /// also dedups the training set
     void train(idx_t n, const float* x) override;

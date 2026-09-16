@@ -1,5 +1,5 @@
-/**
- * Copyright (c) Facebook, Inc. and its affiliates.
+/*
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * This source code is licensed under the MIT license found in the
  * LICENSE file in the root directory of this source tree.
@@ -43,7 +43,7 @@ struct IndexRowwiseMinMaxBase : Index {
     Index* index;
 
     /// whether the subindex needs to be freed in the destructor.
-    bool own_fields;
+    bool own_fields = false;
 
     explicit IndexRowwiseMinMaxBase(Index* index);
 

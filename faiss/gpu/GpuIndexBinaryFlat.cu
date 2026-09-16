@@ -1,5 +1,5 @@
-/**
- * Copyright (c) Facebook, Inc. and its affiliates.
+/*
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * This source code is licensed under the MIT license found in the
  * LICENSE file in the root directory of this source tree.
@@ -146,9 +146,9 @@ void GpuIndexBinaryFlat::search(
         return;
     }
 
-    FAISS_THROW_IF_NOT_MSG(!params, "params not implemented");
+    FAISS_THROW_IF_MSG(params, "params not implemented");
 
-    validateKSelect(k);
+    validateKSelect(k, binaryFlatConfig_.use_cuvs);
 
     // The input vectors may be too large for the GPU, but we still
     // assume that the output distances and labels are not.

@@ -1,11 +1,10 @@
-/**
- * Copyright (c) Facebook, Inc. and its affiliates.
+/*
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * This source code is licensed under the MIT license found in the
  * LICENSE file in the root directory of this source tree.
  */
 
-// Copyright 2004-present Facebook. All Rights Reserved.
 // -*- c++ -*-
 
 #ifndef INDEXSHARDS_C_H
@@ -23,7 +22,7 @@ extern "C" {
 FAISS_DECLARE_CLASS_INHERITED(IndexShards, Index)
 FAISS_DECLARE_DESTRUCTOR(IndexShards)
 
-FAISS_DECLARE_GETTER_SETTER(IndexShards, int, own_fields)
+FAISS_DECLARE_GETTER_SETTER(IndexShards, int, own_indices)
 FAISS_DECLARE_GETTER_SETTER(IndexShards, int, successive_ids)
 
 int faiss_IndexShards_new(FaissIndexShards** p_index, idx_t d);

@@ -1,5 +1,5 @@
-/**
- * Copyright (c) Facebook, Inc. and its affiliates.
+/*
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * This source code is licensed under the MIT license found in the
  * LICENSE file in the root directory of this source tree.
@@ -18,12 +18,15 @@
 #include <cstring>
 #include <memory>
 
+#include <faiss/impl/simd_dispatch.h>
 #include <faiss/utils/distances.h>
 #include <faiss/utils/hamming.h>
 #include <faiss/utils/random.h>
 #include <faiss/utils/utils.h>
 
 #include <faiss/impl/FaissAssert.h>
+
+#include <faiss/impl/polysemous_training/dispatch.h>
 
 /*****************************************
  * Mixed PQ / Hamming
@@ -42,8 +45,9 @@ double PermutationObjective::cost_update(const int* perm, int iw, int jw)
     double orig_cost = compute_cost(perm);
 
     std::vector<int> perm2(n);
-    for (int i = 0; i < n; i++)
+    for (int i = 0; i < n; i++) {
         perm2[i] = perm[i];
+    }
     perm2[iw] = perm[jw];
     perm2[jw] = perm[iw];
 
@@ -52,11 +56,11 @@ double PermutationObjective::cost_update(const int* perm, int iw, int jw)
 }
 
 SimulatedAnnealingOptimizer::SimulatedAnnealingOptimizer(
-        PermutationObjective* obj,
+        PermutationObjective* obj_in,
         const SimulatedAnnealingParameters& p)
         : SimulatedAnnealingParameters(p),
-          obj(obj),
-          n(obj->n),
+          obj(obj_in),
+          n(obj_in->n),
           logfile(nullptr) {
     rnd = new RandomGenerator(p.seed);
     FAISS_THROW_IF_NOT(n < 100000 && n >= 0);
@@ -73,8 +77,9 @@ double SimulatedAnnealingOptimizer::run_optimization(int* best_perm) {
     // just do a few runs of the annealing and keep the lowest output cost
     for (int it = 0; it < n_redo; it++) {
         std::vector<int> perm(n);
-        for (int i = 0; i < n; i++)
+        for (int i = 0; i < n; i++) {
             perm[i] = i;
+        }
         if (init_random) {
             for (int i = 0; i < n; i++) {
                 int j = i + rnd->rand_int(n - i);
@@ -82,8 +87,9 @@ double SimulatedAnnealingOptimizer::run_optimization(int* best_perm) {
             }
         }
         float cost = optimize(perm.data());
-        if (logfile)
+        if (logfile) {
             fprintf(logfile, "\n");
+        }
         if (verbose > 1) {
             printf("    optimization run %d: cost=%g %s\n",
                    it,
@@ -103,8 +109,9 @@ double SimulatedAnnealingOptimizer::run_optimization(int* best_perm) {
 double SimulatedAnnealingOptimizer::optimize(int* perm) {
     double cost = init_cost = obj->compute_cost(perm);
     int log2n = 0;
-    while (!(n <= (1 << log2n)))
+    while (!(n <= (1 << log2n))) {
         log2n++;
+    }
     double temperature = init_temperature;
     int n_swap = 0, n_hot = 0;
     for (int it = 0; it < n_iter; it++) {
@@ -116,16 +123,18 @@ double SimulatedAnnealingOptimizer::optimize(int* perm) {
         } else {
             iw = rnd->rand_int(n);
             jw = rnd->rand_int(n - 1);
-            if (jw == iw)
+            if (jw == iw) {
                 jw++;
+            }
         }
         double delta_cost = obj->cost_update(perm, iw, jw);
         if (delta_cost < 0 || rnd->rand_float() < temperature) {
             std::swap(perm[iw], perm[jw]);
             cost += delta_cost;
             n_swap++;
-            if (delta_cost >= 0)
+            if (delta_cost >= 0) {
                 n_hot++;
+            }
         }
         if (verbose > 2 || (verbose > 1 && it % 10000 == 0)) {
             printf("      iteration %d cost %g temp %g n_swap %d "
@@ -147,8 +156,9 @@ double SimulatedAnnealingOptimizer::optimize(int* perm) {
                     n_hot);
         }
     }
-    if (verbose > 1)
+    if (verbose > 1) {
         printf("\n");
+    }
     return cost;
 }
 
@@ -157,8 +167,96 @@ double SimulatedAnnealingOptimizer::optimize(int* perm) {
  ****************************************************/
 
 static inline int hamming_dis(uint64_t a, uint64_t b) {
-    return __builtin_popcountl(a ^ b);
+    return popcount64(a ^ b);
 }
+
+static inline double sqr(double x) {
+    return x * x;
+}
+
+// Scalar (NONE) kernels for the two objectives. The dispatch boundary lives in
+// the objective methods below, which route to these or to the AVX-512
+// specializations (in polysemous_training/avx512.cpp) via
+// with_selected_simd_levels.
+namespace polysemous_training {
+
+template <>
+double hamming_compute_cost<SIMDLevel::NONE>(
+        int n,
+        const int* perm,
+        const double* target_dis,
+        const double* weights) {
+    double cost = 0;
+    for (int i = 0; i < n; i++) {
+        for (int j = 0; j < n; j++) {
+            double wanted = target_dis[i * n + j];
+            double w = weights[i * n + j];
+            double actual = hamming_dis(perm[i], perm[j]);
+            cost += w * sqr(wanted - actual);
+        }
+    }
+    return cost;
+}
+
+template <>
+double hamming_cost_update<SIMDLevel::NONE>(
+        int n,
+        const int* perm,
+        int iw,
+        int jw,
+        const double* target_dis,
+        const double* weights) {
+    double delta_cost = 0;
+
+    for (int i = 0; i < n; i++) {
+        if (i == iw) {
+            for (int j = 0; j < n; j++) {
+                double wanted = target_dis[i * n + j], w = weights[i * n + j];
+                double actual = hamming_dis(perm[i], perm[j]);
+                delta_cost -= w * sqr(wanted - actual);
+                double new_actual = hamming_dis(
+                        perm[jw],
+                        perm[j == iw           ? jw
+                                     : j == jw ? iw
+                                               : j]);
+                delta_cost += w * sqr(wanted - new_actual);
+            }
+        } else if (i == jw) {
+            for (int j = 0; j < n; j++) {
+                double wanted = target_dis[i * n + j], w = weights[i * n + j];
+                double actual = hamming_dis(perm[i], perm[j]);
+                delta_cost -= w * sqr(wanted - actual);
+                double new_actual = hamming_dis(
+                        perm[iw],
+                        perm[j == iw           ? jw
+                                     : j == jw ? iw
+                                               : j]);
+                delta_cost += w * sqr(wanted - new_actual);
+            }
+        } else {
+            int j = iw;
+            {
+                double wanted = target_dis[i * n + j], w = weights[i * n + j];
+                double actual = hamming_dis(perm[i], perm[j]);
+                delta_cost -= w * sqr(wanted - actual);
+                double new_actual = hamming_dis(perm[i], perm[jw]);
+                delta_cost += w * sqr(wanted - new_actual);
+            }
+            j = jw;
+            {
+                double wanted = target_dis[i * n + j], w = weights[i * n + j];
+                double actual = hamming_dis(perm[i], perm[j]);
+                delta_cost -= w * sqr(wanted - actual);
+                double new_actual = hamming_dis(perm[i], perm[iw]);
+                delta_cost += w * sqr(wanted - new_actual);
+            }
+        }
+    }
+
+    return delta_cost;
+}
+
+} // namespace polysemous_training
 
 namespace {
 
@@ -167,11 +265,7 @@ struct ReproduceWithHammingObjective : PermutationObjective {
     int nbits;
     double dis_weight_factor;
 
-    static double sqr(double x) {
-        return x * x;
-    }
-
-    // weihgting of distances: it is more important to reproduce small
+    // weighting of distances: it is more important to reproduce small
     // distances well
     double dis_weight(double x) const {
         return exp(-dis_weight_factor * x);
@@ -182,80 +276,28 @@ struct ReproduceWithHammingObjective : PermutationObjective {
 
     // cost = quadratic difference between actual distance and Hamming distance
     double compute_cost(const int* perm) const override {
-        double cost = 0;
-        for (int i = 0; i < n; i++) {
-            for (int j = 0; j < n; j++) {
-                double wanted = target_dis[i * n + j];
-                double w = weights[i * n + j];
-                double actual = hamming_dis(perm[i], perm[j]);
-                cost += w * sqr(wanted - actual);
-            }
-        }
-        return cost;
+        return with_selected_simd_levels<polysemous_training::SIMD_LEVELS>(
+                [&]<SIMDLevel SL>() {
+                    return polysemous_training::hamming_compute_cost<SL>(
+                            n, perm, target_dis.data(), weights.data());
+                });
     }
 
     // what would the cost update be if iw and jw were swapped?
     // computed in O(n) instead of O(n^2) for the full re-computation
     double cost_update(const int* perm, int iw, int jw) const override {
-        double delta_cost = 0;
-
-        for (int i = 0; i < n; i++) {
-            if (i == iw) {
-                for (int j = 0; j < n; j++) {
-                    double wanted = target_dis[i * n + j],
-                           w = weights[i * n + j];
-                    double actual = hamming_dis(perm[i], perm[j]);
-                    delta_cost -= w * sqr(wanted - actual);
-                    double new_actual = hamming_dis(
-                            perm[jw],
-                            perm[j == iw           ? jw
-                                         : j == jw ? iw
-                                                   : j]);
-                    delta_cost += w * sqr(wanted - new_actual);
-                }
-            } else if (i == jw) {
-                for (int j = 0; j < n; j++) {
-                    double wanted = target_dis[i * n + j],
-                           w = weights[i * n + j];
-                    double actual = hamming_dis(perm[i], perm[j]);
-                    delta_cost -= w * sqr(wanted - actual);
-                    double new_actual = hamming_dis(
-                            perm[iw],
-                            perm[j == iw           ? jw
-                                         : j == jw ? iw
-                                                   : j]);
-                    delta_cost += w * sqr(wanted - new_actual);
-                }
-            } else {
-                int j = iw;
-                {
-                    double wanted = target_dis[i * n + j],
-                           w = weights[i * n + j];
-                    double actual = hamming_dis(perm[i], perm[j]);
-                    delta_cost -= w * sqr(wanted - actual);
-                    double new_actual = hamming_dis(perm[i], perm[jw]);
-                    delta_cost += w * sqr(wanted - new_actual);
-                }
-                j = jw;
-                {
-                    double wanted = target_dis[i * n + j],
-                           w = weights[i * n + j];
-                    double actual = hamming_dis(perm[i], perm[j]);
-                    delta_cost -= w * sqr(wanted - actual);
-                    double new_actual = hamming_dis(perm[i], perm[iw]);
-                    delta_cost += w * sqr(wanted - new_actual);
-                }
-            }
-        }
-
-        return delta_cost;
+        return with_selected_simd_levels<polysemous_training::SIMD_LEVELS>(
+                [&]<SIMDLevel SL>() {
+                    return polysemous_training::hamming_cost_update<SL>(
+                            n, perm, iw, jw, target_dis.data(), weights.data());
+                });
     }
 
     ReproduceWithHammingObjective(
-            int nbits,
+            int nbits_in,
             const std::vector<double>& dis_table,
-            double dis_weight_factor)
-            : nbits(nbits), dis_weight_factor(dis_weight_factor) {
+            double dis_weight_factor_in)
+            : nbits(nbits_in), dis_weight_factor(dis_weight_factor_in) {
         n = 1 << nbits;
         FAISS_THROW_IF_NOT(dis_table.size() == n * n);
         set_affine_target_dis(dis_table);
@@ -288,7 +330,7 @@ struct ReproduceWithHammingObjective : PermutationObjective {
 
 } // anonymous namespace
 
-// weihgting of distances: it is more important to reproduce small
+// weighting of distances: it is more important to reproduce small
 // distances well
 double ReproduceDistancesObjective::dis_weight(double x) const {
     return exp(-dis_weight_factor * x);
@@ -298,14 +340,20 @@ double ReproduceDistancesObjective::get_source_dis(int i, int j) const {
     return source_dis[i * n + j];
 }
 
+namespace polysemous_training {
+
 // cost = quadratic difference between actual distance and Hamming distance
-double ReproduceDistancesObjective::compute_cost(const int* perm) const {
+template <>
+double distances_compute_cost<SIMDLevel::NONE>(
+        const ReproduceDistancesObjective& obj,
+        const int* perm) {
+    const int n = obj.n;
     double cost = 0;
     for (int i = 0; i < n; i++) {
         for (int j = 0; j < n; j++) {
-            double wanted = target_dis[i * n + j];
-            double w = weights[i * n + j];
-            double actual = get_source_dis(perm[i], perm[j]);
+            double wanted = obj.target_dis[i * n + j];
+            double w = obj.weights[i * n + j];
+            double actual = obj.get_source_dis(perm[i], perm[j]);
             cost += w * sqr(wanted - actual);
         }
     }
@@ -314,16 +362,22 @@ double ReproduceDistancesObjective::compute_cost(const int* perm) const {
 
 // what would the cost update be if iw and jw were swapped?
 // computed in O(n) instead of O(n^2) for the full re-computation
-double ReproduceDistancesObjective::cost_update(const int* perm, int iw, int jw)
-        const {
+template <>
+double distances_cost_update<SIMDLevel::NONE>(
+        const ReproduceDistancesObjective& obj,
+        const int* perm,
+        int iw,
+        int jw) {
+    const int n = obj.n;
     double delta_cost = 0;
     for (int i = 0; i < n; i++) {
         if (i == iw) {
             for (int j = 0; j < n; j++) {
-                double wanted = target_dis[i * n + j], w = weights[i * n + j];
-                double actual = get_source_dis(perm[i], perm[j]);
+                double wanted = obj.target_dis[i * n + j],
+                       w = obj.weights[i * n + j];
+                double actual = obj.get_source_dis(perm[i], perm[j]);
                 delta_cost -= w * sqr(wanted - actual);
-                double new_actual = get_source_dis(
+                double new_actual = obj.get_source_dis(
                         perm[jw],
                         perm[j == iw           ? jw
                                      : j == jw ? iw
@@ -332,10 +386,11 @@ double ReproduceDistancesObjective::cost_update(const int* perm, int iw, int jw)
             }
         } else if (i == jw) {
             for (int j = 0; j < n; j++) {
-                double wanted = target_dis[i * n + j], w = weights[i * n + j];
-                double actual = get_source_dis(perm[i], perm[j]);
+                double wanted = obj.target_dis[i * n + j],
+                       w = obj.weights[i * n + j];
+                double actual = obj.get_source_dis(perm[i], perm[j]);
                 delta_cost -= w * sqr(wanted - actual);
-                double new_actual = get_source_dis(
+                double new_actual = obj.get_source_dis(
                         perm[iw],
                         perm[j == iw           ? jw
                                      : j == jw ? iw
@@ -345,18 +400,20 @@ double ReproduceDistancesObjective::cost_update(const int* perm, int iw, int jw)
         } else {
             int j = iw;
             {
-                double wanted = target_dis[i * n + j], w = weights[i * n + j];
-                double actual = get_source_dis(perm[i], perm[j]);
+                double wanted = obj.target_dis[i * n + j],
+                       w = obj.weights[i * n + j];
+                double actual = obj.get_source_dis(perm[i], perm[j]);
                 delta_cost -= w * sqr(wanted - actual);
-                double new_actual = get_source_dis(perm[i], perm[jw]);
+                double new_actual = obj.get_source_dis(perm[i], perm[jw]);
                 delta_cost += w * sqr(wanted - new_actual);
             }
             j = jw;
             {
-                double wanted = target_dis[i * n + j], w = weights[i * n + j];
-                double actual = get_source_dis(perm[i], perm[j]);
+                double wanted = obj.target_dis[i * n + j],
+                       w = obj.weights[i * n + j];
+                double actual = obj.get_source_dis(perm[i], perm[j]);
                 delta_cost -= w * sqr(wanted - actual);
-                double new_actual = get_source_dis(perm[i], perm[iw]);
+                double new_actual = obj.get_source_dis(perm[i], perm[iw]);
                 delta_cost += w * sqr(wanted - new_actual);
             }
         }
@@ -364,13 +421,32 @@ double ReproduceDistancesObjective::cost_update(const int* perm, int iw, int jw)
     return delta_cost;
 }
 
+} // namespace polysemous_training
+
+double ReproduceDistancesObjective::compute_cost(const int* perm) const {
+    return with_selected_simd_levels<polysemous_training::SIMD_LEVELS>(
+            [&]<SIMDLevel SL>() {
+                return polysemous_training::distances_compute_cost<SL>(
+                        *this, perm);
+            });
+}
+
+double ReproduceDistancesObjective::cost_update(const int* perm, int iw, int jw)
+        const {
+    return with_selected_simd_levels<polysemous_training::SIMD_LEVELS>(
+            [&]<SIMDLevel SL>() {
+                return polysemous_training::distances_cost_update<SL>(
+                        *this, perm, iw, jw);
+            });
+}
+
 ReproduceDistancesObjective::ReproduceDistancesObjective(
-        int n,
+        int n_in,
         const double* source_dis_in,
         const double* target_dis_in,
-        double dis_weight_factor)
-        : dis_weight_factor(dis_weight_factor), target_dis(target_dis_in) {
-    this->n = n;
+        double dis_weight_factor_in)
+        : dis_weight_factor(dis_weight_factor_in), target_dis(target_dis_in) {
+    this->n = n_in;
     set_affine_target_dis(source_dis_in);
 }
 
@@ -380,7 +456,7 @@ void ReproduceDistancesObjective::compute_mean_stdev(
         double* mean_out,
         double* stddev_out) {
     double sum = 0, sum2 = 0;
-    for (int i = 0; i < n2; i++) {
+    for (size_t i = 0; i < n2; i++) {
         sum += tab[i];
         sum2 += tab[i] * tab[i];
     }
@@ -423,6 +499,8 @@ void ReproduceDistancesObjective::set_affine_target_dis(
 /****************************************************
  * Cost functions: RankingScore
  ****************************************************/
+
+namespace {
 
 /// Maintains a 3D table of elementary costs.
 /// Accumulates elements based on Hamming distance comparisons
@@ -467,8 +545,9 @@ struct Score3Computer : PermutationObjective {
      */
     Taccu compute_update(const int* perm, int iw, int jw) const {
         assert(iw != jw);
-        if (iw > jw)
+        if (iw > jw) {
             std::swap(iw, jw);
+        }
 
         Taccu accu = 0;
         const Ttab* n_gt_i = n_gt.data();
@@ -480,8 +559,9 @@ struct Score3Computer : PermutationObjective {
 
             accu += update_i_cross(perm, iw, jw, ip0, ip, n_gt_i);
 
-            if (ip != ip0)
+            if (ip != ip0) {
                 accu += update_i_plane(perm, iw, jw, ip0, ip, n_gt_i);
+            }
 
             n_gt_i += nc * nc;
         }
@@ -585,8 +665,9 @@ struct Score3Computer : PermutationObjective {
             const Ttab* n_gt_ij) const {
         Taccu accu = 0;
         for (int k = 0; k < nc; k++) {
-            if (k == iw || k == jw)
+            if (k == iw || k == jw) {
                 continue;
+            }
             int kp = perm[k];
             Ttab ng = n_gt_ij[k];
             if (hamming_dis(ip, jp) < hamming_dis(ip, kp)) {
@@ -617,15 +698,16 @@ struct Score3Computer : PermutationObjective {
             accu += update_k(perm, iw, jw, ip0, ip, jp0, jp, iw, n_gt_ij);
             accu += update_k(perm, iw, jw, ip0, ip, jp0, jp, jw, n_gt_ij);
 
-            if (jp != jp0)
+            if (jp != jp0) {
                 accu += update_j_line(perm, iw, jw, ip0, ip, jp0, jp, n_gt_ij);
+            }
 
             n_gt_ij += nc;
         }
         return accu;
     }
 
-    /// PermutationObjective implementeation (just negates the scores
+    /// PermutationObjective implementation (just negates the scores
     /// for minimization)
 
     double compute_cost(const int* perm) const override {
@@ -654,18 +736,18 @@ struct RankingScore2 : Score3Computer<float, double> {
     const float* gt_distances;
 
     RankingScore2(
-            int nbits,
-            int nq,
-            int nb,
-            const uint32_t* qcodes,
-            const uint32_t* bcodes,
-            const float* gt_distances)
-            : nbits(nbits),
-              nq(nq),
-              nb(nb),
-              qcodes(qcodes),
-              bcodes(bcodes),
-              gt_distances(gt_distances) {
+            int nbits_in,
+            int nq_in,
+            int nb_in,
+            const uint32_t* qcodes_in,
+            const uint32_t* bcodes_in,
+            const float* gt_distances_in)
+            : nbits(nbits_in),
+              nq(nq_in),
+              nb(nb_in),
+              qcodes(qcodes_in),
+              bcodes(bcodes_in),
+              gt_distances(gt_distances_in) {
         n = nc = 1 << nbits;
         n_gt.resize(nc * nc * nc);
         init_n_gt();
@@ -678,7 +760,7 @@ struct RankingScore2 : Score3Computer<float, double> {
     /// count nb of i, j in a x b st. i < j
     /// a and b should be sorted on input
     /// they are the ranks of j and k respectively.
-    /// specific version for diff-of-rank weighting, cannot optimized
+    /// specific version for diff-of-rank weighting, cannot optimize
     /// with a cumulative table
     double accum_gt_weight_diff(
             const std::vector<int>& a,
@@ -721,8 +803,9 @@ struct RankingScore2 : Score3Computer<float, double> {
 
             { // build rank table
                 IndirectSort s = {gtd};
-                for (int j = 0; j < nb; j++)
+                for (int j = 0; j < nb; j++) {
                     ranks[j] = j;
+                }
                 std::sort(ranks, ranks + nb, s);
             }
 
@@ -743,6 +826,8 @@ struct RankingScore2 : Score3Computer<float, double> {
         }
     }
 };
+
+} // namespace
 
 /*****************************************
  * PolysemousTraining
@@ -779,19 +864,25 @@ void PolysemousTraining::optimize_reproduce_distances(
     }
 
 #pragma omp parallel for num_threads(nt)
-    for (int m = 0; m < pq.M; m++) {
+    for (int m = 0; m < static_cast<int>(pq.M); m++) {
         std::vector<double> dis_table;
 
         // printf ("Optimizing quantizer %d\n", m);
 
         float* centroids = pq.get_centroids(m, 0);
 
-        for (int i = 0; i < n; i++) {
-            for (int j = 0; j < n; j++) {
-                dis_table.push_back(fvec_L2sqr(
-                        centroids + i * dsub, centroids + j * dsub, dsub));
+        auto compute_dis_table = [&]<SIMDLevel SL>() {
+            for (int i = 0; i < n; i++) {
+                for (int j = 0; j < n; j++) {
+                    dis_table.push_back(
+                            fvec_L2sqr<SL>(
+                                    centroids + i * dsub,
+                                    centroids + j * dsub,
+                                    dsub));
+                }
             }
-        }
+        };
+        with_simd_level(compute_dis_table);
 
         std::vector<int> perm(n);
         ReproduceWithHammingObjective obj(nbits, dis_table, dis_weight_factor);
@@ -800,7 +891,14 @@ void PolysemousTraining::optimize_reproduce_distances(
 
         if (log_pattern.size()) {
             char fname[256];
+#if defined(__GNUC__) || defined(__clang__)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wformat-nonliteral"
+#endif
             snprintf(fname, 256, log_pattern.c_str(), m);
+#if defined(__GNUC__) || defined(__clang__)
+#pragma GCC diagnostic pop
+#endif
             printf("opening log file %s\n", fname);
             optim.logfile = fopen(fname, "w");
             FAISS_THROW_IF_NOT_MSG(optim.logfile, "could not open logfile");
@@ -814,17 +912,20 @@ void PolysemousTraining::optimize_reproduce_distances(
                    final_cost);
         }
 
-        if (log_pattern.size())
+        if (log_pattern.size()) {
             fclose(optim.logfile);
+        }
 
         std::vector<float> centroids_copy;
-        for (int i = 0; i < dsub * n; i++)
+        for (int i = 0; i < dsub * n; i++) {
             centroids_copy.push_back(centroids[i]);
+        }
 
-        for (int i = 0; i < n; i++)
+        for (int i = 0; i < n; i++) {
             memcpy(centroids + perm[i] * dsub,
                    centroids_copy.data() + i * dsub,
                    dsub * sizeof(centroids[0]));
+        }
     }
 }
 
@@ -846,21 +947,23 @@ void PolysemousTraining::optimize_ranking(
     }
 
 #pragma omp parallel for
-    for (int m = 0; m < pq.M; m++) {
+    for (int m = 0; m < static_cast<int>(pq.M); m++) {
         size_t nq, nb;
         std::vector<uint32_t> codes;     // query codes, then db codes
         std::vector<float> gt_distances; // nq * nb matrix of distances
 
         if (n > 0) {
             std::vector<float> xtrain(n * dsub);
-            for (int i = 0; i < n; i++)
+            for (size_t i = 0; i < n; i++) {
                 memcpy(xtrain.data() + i * dsub,
                        x + i * pq.d + m * dsub,
                        sizeof(float) * dsub);
+            }
 
             codes.resize(n);
-            for (int i = 0; i < n; i++)
+            for (size_t i = 0; i < n; i++) {
                 codes[i] = all_codes[i * pq.code_size + m];
+            }
 
             nq = n / 4;
             nb = n - nq;
@@ -873,8 +976,9 @@ void PolysemousTraining::optimize_ranking(
         } else {
             nq = nb = pq.ksub;
             codes.resize(2 * nq);
-            for (int i = 0; i < nq; i++)
-                codes[i] = codes[i + nq] = i;
+            for (size_t i = 0; i < nq; i++) {
+                codes[i] = codes[i + nq] = static_cast<uint32_t>(i);
+            }
 
             gt_distances.resize(nq * nb);
 
@@ -906,7 +1010,14 @@ void PolysemousTraining::optimize_ranking(
 
         if (log_pattern.size()) {
             char fname[256];
+#if defined(__GNUC__) || defined(__clang__)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wformat-nonliteral"
+#endif
             snprintf(fname, 256, log_pattern.c_str(), m);
+#if defined(__GNUC__) || defined(__clang__)
+#pragma GCC diagnostic pop
+#endif
             printf("opening log file %s\n", fname);
             optim.logfile = fopen(fname, "w");
             FAISS_THROW_IF_NOT_FMT(
@@ -921,19 +1032,22 @@ void PolysemousTraining::optimize_ranking(
                optim.init_cost,
                final_cost);
 
-        if (log_pattern.size())
+        if (log_pattern.size()) {
             fclose(optim.logfile);
+        }
 
         float* centroids = pq.get_centroids(m, 0);
 
         std::vector<float> centroids_copy;
-        for (int i = 0; i < dsub * pq.ksub; i++)
+        for (size_t i = 0; i < dsub * pq.ksub; i++) {
             centroids_copy.push_back(centroids[i]);
+        }
 
-        for (int i = 0; i < pq.ksub; i++)
+        for (size_t i = 0; i < pq.ksub; i++) {
             memcpy(centroids + perm[i] * dsub,
                    centroids_copy.data() + i * dsub,
                    dsub * sizeof(centroids[0]));
+        }
     }
 }
 
@@ -964,7 +1078,7 @@ size_t PolysemousTraining::memory_usage_per_thread(
             return n * n * n * sizeof(float);
     }
 
-    FAISS_THROW_MSG("Invalid optmization type");
+    FAISS_THROW_MSG("Invalid optimization type");
     return 0;
 }
 

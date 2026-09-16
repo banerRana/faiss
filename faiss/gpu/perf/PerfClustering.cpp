@@ -1,5 +1,5 @@
-/**
- * Copyright (c) Facebook, Inc. and its affiliates.
+/*
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * This source code is licensed under the MIT license found in the
  * LICENSE file in the root directory of this source tree.
@@ -42,7 +42,7 @@ using namespace faiss::gpu;
 int main(int argc, char** argv) {
     gflags::ParseCommandLineFlags(&argc, &argv, true);
 
-    cudaProfilerStop();
+    CUDA_VERIFY(cudaProfilerStop());
 
     auto seed = FLAGS_seed != -1 ? FLAGS_seed : time(nullptr);
     printf("using seed %ld\n", seed);

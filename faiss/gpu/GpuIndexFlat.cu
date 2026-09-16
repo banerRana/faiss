@@ -1,5 +1,5 @@
-/**
- * Copyright (c) Facebook, Inc. and its affiliates.
+/*
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * This source code is licensed under the MIT license found in the
  * LICENSE file in the root directory of this source tree.
@@ -18,8 +18,8 @@
 #include <faiss/gpu/utils/Float16.cuh>
 #include <limits>
 
-#if defined USE_NVIDIA_RAFT
-#include <faiss/gpu/impl/RaftFlatIndex.cuh>
+#if defined(USE_NVIDIA_CUVS) && !defined(FAISS_CUVS_NO_FLAT)
+#include <faiss/gpu/impl/CuvsFlatIndex.cuh>
 #endif
 
 namespace faiss {
@@ -93,21 +93,26 @@ GpuIndexFlat::GpuIndexFlat(
 GpuIndexFlat::~GpuIndexFlat() {}
 
 void GpuIndexFlat::resetIndex_(int dims) {
-#if defined USE_NVIDIA_RAFT
+#if defined(USE_NVIDIA_CUVS) && !defined(FAISS_CUVS_NO_FLAT)
 
-    if (should_use_raft(config_)) {
-        data_.reset(new RaftFlatIndex(
+    if (should_use_cuvs(config_)) {
+        data_.reset(new CuvsFlatIndex(
                 resources_.get(),
                 dims,
                 flatConfig_.useFloat16,
                 config_.memorySpace));
     } else
-#else
-    if (should_use_raft(config_)) {
+#elif !defined(USE_NVIDIA_CUVS)
+    if (should_use_cuvs(config_)) {
         FAISS_THROW_MSG(
-                "RAFT has not been compiled into the current version so it cannot be used.");
+                "cuVS has not been compiled into the current version so it cannot be used.");
     } else
 #endif
+    // When cuVS is compiled in but the cuVS flat backend is pruned
+    // (FAISS_CUVS_NO_FLAT — e.g. the cuVS 26.02 IVF-PQ-only build on aarch64,
+    // whose cuvs-ivfpq-2602 dep omits neighbors/brute_force), should_use_cuvs
+    // may still be true; fall back to the classic GPU FlatIndex
+    // (bfKnnOnDevice), which is functionally equivalent for brute-force search.
     {
         data_.reset(new FlatIndex(
                 resources_.get(),
@@ -202,7 +207,7 @@ void GpuIndexFlat::addImpl_(idx_t n, const float* x, const idx_t* ids) {
     FAISS_ASSERT(n > 0);
 
     // We do not support add_with_ids
-    FAISS_THROW_IF_NOT_MSG(!ids, "add_with_ids not supported");
+    FAISS_THROW_IF_MSG(ids, "add_with_ids not supported");
 
     data_->add(x, n, resources_->getDefaultStream(config_.device));
     this->ntotal += n;
@@ -224,8 +229,16 @@ void GpuIndexFlat::searchImpl_(
     Tensor<float, 2, true> outDistances(distances, {n, k});
     Tensor<idx_t, 2, true> outLabels(labels, {n, k});
 
+    const IDSelector* sel = params ? params->sel : nullptr;
     data_->query(
-            queries, k, metric_type, metric_arg, outDistances, outLabels, true);
+            queries,
+            k,
+            metric_type,
+            metric_arg,
+            outDistances,
+            outLabels,
+            true,
+            sel);
 }
 
 void GpuIndexFlat::reconstruct(idx_t key, float* out) const {
